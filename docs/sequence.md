@@ -132,6 +132,7 @@ sequenceDiagram
     Ntrip->>Serial: Write RTCM corrections
     Main->>Serial: Read NMEA line by line
     Main->>Main: Parse NMEA and update Snapshot
+    Main->>Spool: Prune old payloads if file or byte limit is exceeded
     Main->>Spool: Write JSON payload every interval
     Sender->>Spool: Read oldest payload
     Sender->>Unified: POST JSON payload
@@ -150,9 +151,12 @@ sequenceDiagram
 - `unified_worker()` はspool内の古いJSONから順にUnified EndpointへPOSTします。
 - HTTP失敗やLTE一時断が起きた場合、送信できなかったpayloadはspoolに残り、次回以降に再送されます。
 - `UNIFIED_MAX_SPOOL_FILES` がリングバッファの最大件数で、上限に達すると古いpayloadから削除します。
+- `UNIFIED_MAX_SPOOL_BYTES` を指定すると、spool内JSON payloadの合計byte数でも上限管理できます。
+- spool書き込み前に古いpayloadを削除して空きを作ります。書き込み失敗時は古いpayloadを1件追加削除して一度だけ再試行し、それでも失敗した送信窓はdropします。
 - RAM上のspoolは再起動で消えますが、SDカードへの書き込みを避けられます。
 - シリアル読み取りとHTTP POSTは別スレッドなので、Unified Endpoint側が詰まってもNMEA読み取り窓は止まりません。
-- HTTP 2xx以外、タイムアウト、接続エラーはログに出し、`UNIFIED_POST_RETRY_DELAY` 後に再試行します。
+- HTTP 2xx以外、タイムアウト、接続エラーはログに出し、`UNIFIED_POST_RETRY_DELAY` 後に再試行します。この待機は新規payload到着では短縮されません。
+- NTRIP thread側でRTCMのserial書き込みに失敗した場合はmain threadへfatal serial errorを通知し、プロセスは終了コード1で抜けます。
 
 ### Unified payload
 

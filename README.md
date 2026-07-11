@@ -47,6 +47,7 @@ SDカードへの継続書き込みを避けたい場合は、RAM上のtmpfsをs
 ```bash
 export UNIFIED_SPOOL_STORAGE=ram
 export UNIFIED_MAX_SPOOL_FILES=7200
+export UNIFIED_MAX_SPOOL_BYTES=16777216
 python3 rtk_nmea_unified.py
 ```
 
@@ -58,9 +59,11 @@ RuntimeDirectory=qlm29h-nmea-unified
 Environment=UNIFIED_SPOOL_STORAGE=ram
 Environment=UNIFIED_SPOOL_DIR=/run/qlm29h-nmea-unified/spool
 Environment=UNIFIED_MAX_SPOOL_FILES=7200
+Environment=UNIFIED_MAX_SPOOL_BYTES=16777216
 ```
 
 `UNIFIED_MAX_SPOOL_FILES` はリングバッファの最大件数です。上限に達すると古いpayloadから削除します。
+`UNIFIED_MAX_SPOOL_BYTES` はspool内JSON payloadの合計byte数上限です。`0` を指定するとbyte上限を無効化します。
 RAM上のspoolは再起動で消えるため、SDカード保護を優先する用途向けです。
 
 ## ライセンス

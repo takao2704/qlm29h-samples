@@ -40,6 +40,9 @@ running = True
 latest_gga = ""
 latest_gga_lock = threading.Lock()
 serial_write_lock = threading.Lock()
+fatal_serial_error = threading.Event()
+fatal_serial_error_message = ""
+fatal_serial_error_lock = threading.Lock()
 
 
 def to_int(value: str | None) -> int | None:
@@ -424,6 +427,28 @@ def build_ntrip_request(host: str, mount: str, username: str, password: str) -> 
     return request.encode()
 
 
+def signal_fatal_serial_error(message: str) -> None:
+    global fatal_serial_error_message
+
+    with fatal_serial_error_lock:
+        fatal_serial_error_message = message
+    fatal_serial_error.set()
+
+
+def get_fatal_serial_error_message() -> str:
+    with fatal_serial_error_lock:
+        return fatal_serial_error_message
+
+
+def wait_while_running(seconds: float) -> None:
+    deadline = time.monotonic() + max(0.0, seconds)
+    while running:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(0.5, remaining))
+
+
 def ntrip_worker(args: argparse.Namespace, ser: serial.Serial) -> None:
     if not args.ntrip_user or not args.ntrip_pass:
         print("[NTRIP] Disabled: NTRIP_USER/NTRIP_PASS are not set", flush=True)
@@ -457,15 +482,19 @@ def ntrip_worker(args: argparse.Namespace, ser: serial.Serial) -> None:
                     continue
                 if not data:
                     raise ConnectionError("NTRIP socket closed")
-                with serial_write_lock:
-                    ser.write(data)
+                try:
+                    with serial_write_lock:
+                        ser.write(data)
+                except (OSError, serial.SerialException) as exc:
+                    signal_fatal_serial_error(f"NTRIP serial write failed: {exc}")
+                    return
                 if now - last_rtcm_log >= 10:
                     print(f"[NTRIP] RTCM forwarded: {len(data)} bytes", flush=True)
                     last_rtcm_log = now
         except Exception as exc:  # noqa: BLE001
             if running:
                 print(f"[NTRIP] Error: {exc}; reconnecting in 5s", flush=True)
-                time.sleep(5)
+                wait_while_running(5)
 
 
 def post_payload(endpoint: str, payload: dict[str, Any], timeout: float) -> int:
@@ -490,31 +519,116 @@ def spooled_payloads(spool_dir: pathlib.Path) -> list[pathlib.Path]:
     return sorted(spool_dir.glob("*.json"))
 
 
-def prune_spool(spool_dir: pathlib.Path, max_files: int) -> None:
-    if max_files <= 0:
-        return
+def spool_file_sizes(files: list[pathlib.Path]) -> list[tuple[pathlib.Path, int]]:
+    sized_files = []
+    for path in files:
+        try:
+            sized_files.append((path, path.stat().st_size))
+        except FileNotFoundError:
+            continue
+    return sized_files
+
+
+def drop_oldest_payload(spool_dir: pathlib.Path) -> bool:
     files = spooled_payloads(spool_dir)
-    overflow = len(files) - max_files
-    if overflow <= 0:
+    if not files:
+        return False
+    path = files[0]
+    try:
+        path.unlink()
+        print(f"[UNIFIED] Spool full; dropped oldest payload {path.name}", flush=True)
+        return True
+    except OSError as exc:
+        print(f"[UNIFIED] Failed to prune {path.name}: {exc}", flush=True)
+        return False
+
+
+def prune_spool(
+    spool_dir: pathlib.Path,
+    max_files: int,
+    max_bytes: int,
+    reserve_files: int = 0,
+    reserve_bytes: int = 0,
+) -> None:
+    if max_files <= 0 and max_bytes <= 0:
         return
-    for path in files[:overflow]:
+
+    if max_bytes > 0:
+        sized_files = spool_file_sizes(spooled_payloads(spool_dir))
+    else:
+        sized_files = [(path, 0) for path in spooled_payloads(spool_dir)]
+    total_bytes = sum(size for _, size in sized_files)
+
+    def over_limit() -> bool:
+        file_limit_hit = max_files > 0 and len(sized_files) + reserve_files > max_files
+        byte_limit_hit = max_bytes > 0 and total_bytes + reserve_bytes > max_bytes
+        return file_limit_hit or byte_limit_hit
+
+    while sized_files and over_limit():
+        path, size = sized_files.pop(0)
         try:
             path.unlink()
+            total_bytes -= size
             print(f"[UNIFIED] Spool full; dropped oldest payload {path.name}", flush=True)
         except OSError as exc:
             print(f"[UNIFIED] Failed to prune {path.name}: {exc}", flush=True)
 
 
-def spool_payload(spool_dir: pathlib.Path, payload: dict[str, Any], max_files: int) -> pathlib.Path:
-    spool_dir.mkdir(parents=True, exist_ok=True)
+def cleanup_tmp_payload(tmp_path: pathlib.Path) -> None:
+    try:
+        tmp_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        print(f"[UNIFIED] Failed to remove temp payload {tmp_path.name}: {exc}", flush=True)
+
+
+def write_payload_file(tmp_path: pathlib.Path, final_path: pathlib.Path, payload_bytes: bytes) -> None:
+    tmp_path.write_bytes(payload_bytes)
+    os.replace(tmp_path, final_path)
+
+
+def spool_payload(
+    spool_dir: pathlib.Path,
+    payload: dict[str, Any],
+    max_files: int,
+    max_bytes: int,
+) -> pathlib.Path | None:
+    payload_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if max_bytes > 0 and len(payload_bytes) > max_bytes:
+        print(
+            f"[UNIFIED] Dropped payload: size={len(payload_bytes)} exceeds max_spool_bytes={max_bytes}",
+            flush=True,
+        )
+        return None
+
+    try:
+        spool_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"[UNIFIED] Dropped payload: cannot create spool dir {spool_dir}: {exc}", flush=True)
+        return None
+
     sent_at = str(payload.get("sent_at") or dt.datetime.now(dt.UTC).isoformat())
     safe_sent_at = "".join(ch if ch.isalnum() else "-" for ch in sent_at)
     filename = f"{safe_sent_at}-{time.time_ns()}.json"
     tmp_path = spool_dir / f".{filename}.tmp"
     final_path = spool_dir / filename
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    os.replace(tmp_path, final_path)
-    prune_spool(spool_dir, max_files)
+    prune_spool(spool_dir, max_files, max_bytes, reserve_files=1, reserve_bytes=len(payload_bytes))
+    try:
+        write_payload_file(tmp_path, final_path, payload_bytes)
+    except OSError as exc:
+        print(f"[UNIFIED] Spool write failed: {exc}; pruning one payload and retrying once", flush=True)
+        cleanup_tmp_payload(tmp_path)
+        if not drop_oldest_payload(spool_dir):
+            return None
+        try:
+            write_payload_file(tmp_path, final_path, payload_bytes)
+        except OSError as retry_exc:
+            print(f"[UNIFIED] Dropped payload after retry: {retry_exc}", flush=True)
+            cleanup_tmp_payload(tmp_path)
+            return None
+
+    prune_spool(spool_dir, max_files, max_bytes)
     return final_path
 
 
@@ -539,9 +653,15 @@ def unified_worker(args: argparse.Namespace, wake_event: threading.Event) -> Non
 
     posts = 0
     spool_dir = pathlib.Path(args.spool_dir)
-    spool_dir.mkdir(parents=True, exist_ok=True)
 
     while running:
+        try:
+            spool_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(f"[UNIFIED] Cannot create spool dir {spool_dir}: {exc}; retrying", flush=True)
+            wait_while_running(args.post_retry_delay)
+            continue
+
         files = spooled_payloads(spool_dir)
         if not files:
             wake_event.wait(1.0)
@@ -563,8 +683,7 @@ def unified_worker(args: argparse.Namespace, wake_event: threading.Event) -> Non
                     raise RuntimeError(f"HTTP {status}")
             except Exception as exc:  # noqa: BLE001
                 print(f"[UNIFIED] Error: {exc}; pending={len(spooled_payloads(spool_dir))}", flush=True)
-                wake_event.wait(args.post_retry_delay)
-                wake_event.clear()
+                wait_while_running(args.post_retry_delay)
                 break
 
             try:
@@ -622,6 +741,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(os.environ.get("UNIFIED_MAX_SPOOL_FILES", os.environ.get("UNIFIED_MAX_PENDING", "7200"))),
     )
+    parser.add_argument(
+        "--max-spool-bytes",
+        type=int,
+        default=int(os.environ.get("UNIFIED_MAX_SPOOL_BYTES", "0")),
+        help="Maximum total bytes for spooled JSON payloads. 0 disables the byte limit.",
+    )
     parser.add_argument("--flush-burst", type=int, default=int(os.environ.get("UNIFIED_FLUSH_BURST", "3")))
     parser.add_argument("--post-retry-delay", type=float, default=float(os.environ.get("UNIFIED_POST_RETRY_DELAY", "5")))
     parser.add_argument("--ntrip-host", default=os.environ.get("NTRIP_HOST", "qrtksa1.quectel.com"))
@@ -645,10 +770,20 @@ def main() -> int:
     signal.signal(signal.SIGTERM, handle_signal)
 
     print(f"[MAIN] Opening {args.serial_port} @ {args.baud}", flush=True)
-    ser = serial.Serial(args.serial_port, args.baud, timeout=1)
-    time.sleep(0.2)
-    with serial_write_lock:
-        ser.write(b"$PQTMCFGRTK,W,1,1*6C\r\n")
+    ser = None
+    try:
+        ser = serial.Serial(args.serial_port, args.baud, timeout=1)
+        time.sleep(0.2)
+        with serial_write_lock:
+            ser.write(b"$PQTMCFGRTK,W,1,1*6C\r\n")
+    except (OSError, serial.SerialException) as exc:
+        print(f"[MAIN] Serial setup error: {exc}; exiting for systemd restart", flush=True)
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception as close_exc:  # noqa: BLE001
+                print(f"[MAIN] Serial close error ignored: {close_exc}", flush=True)
+        return 1
 
     if not args.no_ntrip:
         threading.Thread(target=ntrip_worker, args=(args, ser), daemon=True).start()
@@ -657,7 +792,7 @@ def main() -> int:
     spool_dir = pathlib.Path(args.spool_dir)
     print(
         f"[UNIFIED] Spool storage={args.spool_storage} dir={spool_dir} "
-        f"max_files={args.max_spool_files}",
+        f"max_files={args.max_spool_files} max_bytes={args.max_spool_bytes}",
         flush=True,
     )
     send_wake = threading.Event()
@@ -665,6 +800,9 @@ def main() -> int:
     next_post = time.monotonic() + args.interval
     try:
         while running:
+            if fatal_serial_error.is_set():
+                print(f"[MAIN] Fatal serial error: {get_fatal_serial_error_message()}", flush=True)
+                return 1
             try:
                 raw = ser.readline().decode(errors="ignore").strip()
             except (OSError, serial.SerialException) as exc:
@@ -684,16 +822,19 @@ def main() -> int:
                 if not snapshot.has_data():
                     continue
                 payload = snapshot.build_payload(args.serial_port)
-                spool_payload(spool_dir, payload, args.max_spool_files)
+                spooled_path = spool_payload(spool_dir, payload, args.max_spool_files, args.max_spool_bytes)
+                if spooled_path is None:
+                    print("[UNIFIED] Current payload was not spooled; resetting snapshot", flush=True)
                 snapshot.reset()
                 send_wake.set()
     finally:
         running = False
         send_wake.set()
-        try:
-            ser.close()
-        except Exception as exc:  # noqa: BLE001
-            print(f"[MAIN] Serial close error ignored: {exc}", flush=True)
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[MAIN] Serial close error ignored: {exc}", flush=True)
         print("[MAIN] Stopped", flush=True)
     return 0
 
