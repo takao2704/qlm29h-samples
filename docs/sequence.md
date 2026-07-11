@@ -1,7 +1,7 @@
 # Python scripts sequence
 
-このドキュメントは、`rtk_client.py`、`rtk_harvest.py`、`rtk_nmea_unified.py` の実行シーケンスを説明します。
-3つとも QLM29H から出力される NMEA を読み取り、NTRIP caster から受信した RTCM 補正データを QLM29H へ書き戻す構成です。
+このドキュメントは、`rtk_client.py`、`rtk_harvest.py`、`rtk_nmea_unified.py`、`dr_calibrate.py` の実行シーケンスを説明します。
+先頭の3つは QLM29H から出力される NMEA を読み取り、NTRIP caster から受信した RTCM 補正データを QLM29H へ書き戻す構成です。`dr_calibrate.py` は走行校正専用です。
 
 ## rtk_client.py
 
@@ -206,3 +206,30 @@ sequenceDiagram
 | No Fix handling | Logs only | `quality=0` is skipped | All NMEA can be sent, including No Fix windows |
 | LTE/HTTP interruption tolerance | Not applicable | Failed payload is dropped | Payload remains in spool and is retried until ring buffer limit |
 | Main purpose | RTK/NTRIP behavior check | RTK/NTRIP plus location data upload | Long-running daemon and full NMEA JSON upload |
+
+## dr_calibrate.py
+
+```mermaid
+sequenceDiagram
+    participant User as User
+    participant Tool as dr_calibrate.py
+    participant Serial as QLM29H serial
+
+    User->>Tool: Start after stopping sender service
+    Tool->>Serial: Read current PQTMDRCAL output rate
+    Tool->>Serial: Enable PQTMDRCAL at 1 Hz
+    Tool->>Serial: Enable DR
+    Tool->>Serial: Configure DR hot start mode
+    opt --clear
+        Tool->>Serial: Clear existing calibration
+    end
+    loop While driving
+        Serial-->>Tool: PQTMDRCAL CalState/NavType
+        Tool->>Tool: Report state changes and 15-second progress
+    end
+    Tool->>Serial: Save calibration at CalState >= target
+    Tool->>Serial: Restore original PQTMDRCAL output rate
+    Tool-->>User: Exit 0 on completion
+```
+
+既存の `qlm29h-nmea-unified.service` がactiveの場合は、同一シリアルポートの競合を避けるため実行を拒否します。詳細は [dr-calibration.md](dr-calibration.md) を参照してください。
