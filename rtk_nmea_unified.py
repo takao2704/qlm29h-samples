@@ -78,6 +78,20 @@ def nmea_checksum(data: str) -> str:
     return f"{checksum:02X}"
 
 
+def build_receiver_command(command: str) -> bytes:
+    return f"${command}*{nmea_checksum(command)}\r\n".encode("ascii")
+
+
+def receiver_startup_commands(dr_state: str) -> list[tuple[str, bytes]]:
+    if dr_state not in ("on", "off", "unchanged"):
+        raise ValueError("dr_state must be on, off, or unchanged")
+    commands = [("RTK on", build_receiver_command("PQTMCFGRTK,W,1,1"))]
+    if dr_state != "unchanged":
+        state = 1 if dr_state == "on" else 0
+        commands.append((f"DR {dr_state}", build_receiver_command(f"PQTMCFGDR,W,{state}")))
+    return commands
+
+
 def parse_coord(raw: str | None, hemisphere: str | None) -> float | None:
     if not raw or not hemisphere:
         return None
@@ -754,6 +768,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ntrip-mount", default=os.environ.get("NTRIP_MOUNT", "AUTO"))
     parser.add_argument("--ntrip-user", default=os.environ.get("NTRIP_USER", ""))
     parser.add_argument("--ntrip-pass", default=os.environ.get("NTRIP_PASS", ""))
+    parser.add_argument(
+        "--dr-state",
+        choices=("on", "off", "unchanged"),
+        default=os.environ.get("QLM29H_DR_STATE", "on").strip().lower(),
+        help="Set QLM29H DR state at startup, or leave the receiver setting unchanged.",
+    )
     parser.add_argument("--no-ntrip", action="store_true")
     parser.add_argument("--max-posts", type=int, default=0)
     args = parser.parse_args()
@@ -774,8 +794,11 @@ def main() -> int:
     try:
         ser = serial.Serial(args.serial_port, args.baud, timeout=1)
         time.sleep(0.2)
-        with serial_write_lock:
-            ser.write(b"$PQTMCFGRTK,W,1,1*6C\r\n")
+        for label, command in receiver_startup_commands(args.dr_state):
+            with serial_write_lock:
+                ser.write(command)
+            print(f"[MAIN] Receiver command ({label}): {command.decode().strip()}", flush=True)
+            time.sleep(0.2)
     except (OSError, serial.SerialException) as exc:
         print(f"[MAIN] Serial setup error: {exc}; exiting for systemd restart", flush=True)
         if ser is not None:

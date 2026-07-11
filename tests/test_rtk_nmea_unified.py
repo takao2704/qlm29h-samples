@@ -96,6 +96,30 @@ class SpoolPayloadTest(unittest.TestCase):
             self.assertEqual(remaining, ["2026-07-11T00:00:02+00:00"])
 
 
+class ReceiverStartupCommandsTest(unittest.TestCase):
+    def test_dr_on_command_uses_documented_checksum(self) -> None:
+        commands = rtk_nmea_unified.receiver_startup_commands("on")
+        self.assertEqual(
+            commands,
+            [
+                ("RTK on", b"$PQTMCFGRTK,W,1,1*6C\r\n"),
+                ("DR on", b"$PQTMCFGDR,W,1*2A\r\n"),
+            ],
+        )
+
+    def test_dr_off_command_is_generated(self) -> None:
+        commands = rtk_nmea_unified.receiver_startup_commands("off")
+        self.assertEqual(commands[-1], ("DR off", b"$PQTMCFGDR,W,0*2B\r\n"))
+
+    def test_dr_unchanged_sends_no_dr_command(self) -> None:
+        commands = rtk_nmea_unified.receiver_startup_commands("unchanged")
+        self.assertEqual(commands, [("RTK on", b"$PQTMCFGRTK,W,1,1*6C\r\n")])
+
+    def test_invalid_dr_state_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "dr_state"):
+            rtk_nmea_unified.receiver_startup_commands("invalid")
+
+
 class UnifiedWorkerTest(unittest.TestCase):
     def tearDown(self) -> None:
         rtk_nmea_unified.running = False

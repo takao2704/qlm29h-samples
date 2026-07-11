@@ -33,6 +33,7 @@ NTRIP_PORT  = 2101                   # NTRIPポート
 NTRIP_MOUNT = "AUTO"                 # マウントポイント
 NTRIP_USER  = os.environ.get("NTRIP_USER", "")  # 環境変数から取得
 NTRIP_PASS  = os.environ.get("NTRIP_PASS", "")  # 環境変数から取得
+DR_STATE    = os.environ.get("QLM29H_DR_STATE", "on").strip().lower()
 # ==========================================
 
 # RTCMメッセージ番号の説明
@@ -54,6 +55,7 @@ GGA_QUALITY = {
     "2": "Differential GPS / SPS / SBAS Mode",
     "4": "Fixed RTK",
     "5": "Float RTK",
+    "6": "Estimated / Dead Reckoning",
 }
 
 latest_gga = None
@@ -98,6 +100,23 @@ def init_rtk_mode(ser: serial.Serial):
     cs  = nmea_checksum(cmd)
     msg = f"${cmd}*{cs}\r\n"
     print(f"[INIT] Enabling RTK mode: {msg.strip()}")
+    ser.write(msg.encode())
+    time.sleep(0.5)
+
+
+def init_dr_mode(ser: serial.Serial):
+    """環境変数に従ってDRを有効化、無効化、または変更せずに維持する"""
+    if DR_STATE == "unchanged":
+        print("[INIT] Leaving DR state unchanged")
+        return
+    if DR_STATE not in ("on", "off"):
+        raise ValueError("QLM29H_DR_STATE must be on, off, or unchanged")
+
+    state = 1 if DR_STATE == "on" else 0
+    cmd = f"PQTMCFGDR,W,{state}"
+    cs = nmea_checksum(cmd)
+    msg = f"${cmd}*{cs}\r\n"
+    print(f"[INIT] Setting DR mode {DR_STATE}: {msg.strip()}")
     ser.write(msg.encode())
     time.sleep(0.5)
 
@@ -235,6 +254,7 @@ def main():
 
     time.sleep(1)
     init_rtk_mode(ser)
+    init_dr_mode(ser)
 
     # スレッド起動
     t_serial = threading.Thread(target=read_serial, args=(ser,), daemon=True)

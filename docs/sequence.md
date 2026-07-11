@@ -22,6 +22,7 @@ sequenceDiagram
     Main->>Main: Check NTRIP_USER / NTRIP_PASS
     Main->>Serial: Open SERIAL_PORT
     Main->>Serial: Send $PQTMCFGRTK,W,1,1
+    Main->>Serial: Send $PQTMCFGDR,W,1 (when DR_STATE=on)
     Main->>Reader: Start read_serial()
     Main->>Ntrip: Start ntrip_client()
     Reader->>Serial: Read NMEA continuously
@@ -34,7 +35,7 @@ sequenceDiagram
 
 ### Runtime behavior
 
-- `main()` はシリアルポートを開き、`PQTMCFGRTK,W,1,1` でRTKを有効化します。
+- `main()` はシリアルポートを開き、`PQTMCFGRTK,W,1,1` でRTKを有効化します。続けて `QLM29H_DR_STATE` に従いDRを有効化または無効化します。
 - `read_serial()` は QLM29H のNMEAを読み続け、最新の `GGA` センテンスだけを共有変数 `latest_gga` に保存します。
 - `ntrip_client()` はNTRIP casterへ接続し、RTCM補正データを受信して同じシリアルポートへ書き込みます。
 - NTRIP casterには1秒ごとに最新の `GGA` を返します。casterはこの位置情報を使って補正データを配信します。
@@ -61,6 +62,7 @@ sequenceDiagram
     Main->>Main: Check NTRIP_USER / NTRIP_PASS
     Main->>Serial: Open SERIAL_PORT
     Main->>Serial: Send $PQTMCFGRTK,W,1,1
+    Main->>Serial: Send $PQTMCFGDR,W,1 (when DR_STATE=on)
     Main->>Reader: Start read_serial()
     Main->>Ntrip: Start ntrip_client()
     Main->>Harvest: Start harvest_sender()
@@ -125,6 +127,7 @@ sequenceDiagram
     Main->>Main: Parse CLI/env settings
     Main->>Serial: Open serial port
     Main->>Serial: Send $PQTMCFGRTK,W,1,1
+    Main->>Serial: Send $PQTMCFGDR,W,1 (when --dr-state=on)
     Main->>Ntrip: Start ntrip_worker()
     Main->>Sender: Start unified_worker()
     Ntrip->>Caster: Connect and send NTRIP GET
@@ -145,6 +148,8 @@ sequenceDiagram
 - systemdで使う場合は `SERIAL_PORT=/dev/serial/by-id/...` のような安定したデバイス名を指定します。
 - SDカードへの書き込みを避ける場合は、`UNIFIED_SPOOL_STORAGE=ram` または `UNIFIED_SPOOL_DIR=/run/...` でRAM上のtmpfsをspool先にします。
 - 起動直後に `PQTMCFGRTK,W,1,1` を送り、RTK/RTD auto modeを有効化します。
+- `QLM29H_DR_STATE`（CLIでは `--dr-state`）に従って `PQTMCFGDR,W,1` または `PQTMCFGDR,W,0` を送ります。`unchanged` の場合はDR設定を変更しません。
+- DRの有効化と校正は別です。車体へ固定した状態で走行校正し、`PQTMDRCAL` の `CalState=2` または `3` を確認する必要があります。
 - `ntrip_worker()` はNTRIP casterへ接続し、最新の `GGA` を1秒ごとに返しながらRTCMをシリアルへ書き込みます。
 - メインスレッドはシリアルからNMEAを読み続け、`GGA/RMC/GLL/VTG/GSA/GSV` などを構造化して `Snapshot` に蓄積します。
 - 送信間隔ごとに `Snapshot.build_payload()` でJSONを作り、spoolディレクトリに原子的に保存します。
@@ -191,6 +196,7 @@ sequenceDiagram
 | Item | `rtk_client.py` | `rtk_harvest.py` | `rtk_nmea_unified.py` |
 |---|---|---|---|
 | RTK enable command | Yes | Yes | Yes |
+| DR state command | `QLM29H_DR_STATE` | `QLM29H_DR_STATE` | `QLM29H_DR_STATE` / `--dr-state` |
 | NTRIP connection | Yes | Yes | Yes |
 | RTCM forwarding to QLM29H | Yes | Yes | Yes |
 | Latest GGA tracking | Yes | Yes | Yes |
