@@ -66,6 +66,12 @@ Environment=UNIFIED_MAX_SPOOL_BYTES=16777216
 `UNIFIED_MAX_SPOOL_BYTES` はspool内JSON payloadの合計byte数上限です。`0` を指定するとbyte上限を無効化します。
 RAM上のspoolは再起動で消えるため、SDカード保護を優先する用途向けです。
 
+## テスト
+
+```bash
+python3 -m unittest discover -s tests
+```
+
 ## ライセンス
 
 このリポジトリのコードは [MIT License](LICENSE) で提供します。
