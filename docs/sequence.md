@@ -1,7 +1,7 @@
 # Python scripts sequence
 
-このドキュメントは、`rtk_client.py` と `rtk_harvest.py` の実行シーケンスを説明します。
-どちらも QLM29H から出力される NMEA を読み取り、NTRIP caster から受信した RTCM 補正データを QLM29H へ書き戻す構成です。
+このドキュメントは、`rtk_client.py`、`rtk_harvest.py`、`rtk_nmea_unified.py` の実行シーケンスを説明します。
+3つとも QLM29H から出力される NMEA を読み取り、NTRIP caster から受信した RTCM 補正データを QLM29H へ書き戻す構成です。
 
 ## rtk_client.py
 
@@ -102,19 +102,93 @@ sequenceDiagram
 }
 ```
 
-## Difference between the two scripts
+## rtk_nmea_unified.py
 
-| Item | `rtk_client.py` | `rtk_harvest.py` |
-|---|---|---|
-| RTK enable command | Yes | Yes |
-| NTRIP connection | Yes | Yes |
-| RTCM forwarding to QLM29H | Yes | Yes |
-| Latest GGA tracking | Yes | Yes |
-| Unified Endpoint POST | No | Yes |
-| No Fix filtering | Not applicable | `quality=0` is skipped |
-| Main purpose | RTK/NTRIP behavior check | RTK/NTRIP plus location data upload |
+`rtk_nmea_unified.py` は長時間稼働と systemd デーモン化を前提にしたサンプルです。
+`rtk_harvest.py` より多くのNMEAセンテンスを構造化し、Unified Endpoint送信はディスク上のspoolを経由します。
 
-## Operational note
+### 起動シーケンス
 
-For long-running daemon operation, use `rtk_nmea_unified.py` instead of these two sample scripts.
-It keeps the same NTRIP and NMEA roles, but adds structured NMEA parsing, disk-backed Unified Endpoint spool, and systemd-friendly execution.
+```mermaid
+sequenceDiagram
+    participant Systemd as systemd
+    participant Main as main()
+    participant Serial as QLM29H serial
+    participant Ntrip as ntrip_worker thread
+    participant Sender as unified_worker thread
+    participant Spool as spool directory
+    participant Caster as NTRIP caster
+    participant Unified as Unified Endpoint
+
+    Systemd->>Main: Start service
+    Main->>Main: Parse CLI/env settings
+    Main->>Serial: Open serial port
+    Main->>Serial: Send $PQTMCFGRTK,W,1,1
+    Main->>Ntrip: Start ntrip_worker()
+    Main->>Sender: Start unified_worker()
+    Ntrip->>Caster: Connect and send NTRIP GET
+    Caster-->>Ntrip: HTTP/ICY 200 + RTCM stream
+    Ntrip->>Serial: Write RTCM corrections
+    Main->>Serial: Read NMEA line by line
+    Main->>Main: Parse NMEA and update Snapshot
+    Main->>Spool: Write JSON payload every interval
+    Sender->>Spool: Read oldest payload
+    Sender->>Unified: POST JSON payload
+    Sender->>Spool: Delete payload after HTTP 2xx
+```
+
+### Runtime behavior
+
+- `main()` は環境変数またはCLI引数からシリアルポート、Unified Endpoint、NTRIP設定を読みます。
+- systemdで使う場合は `SERIAL_PORT=/dev/serial/by-id/...` のような安定したデバイス名を指定します。
+- 起動直後に `PQTMCFGRTK,W,1,1` を送り、RTK/RTD auto modeを有効化します。
+- `ntrip_worker()` はNTRIP casterへ接続し、最新の `GGA` を1秒ごとに返しながらRTCMをシリアルへ書き込みます。
+- メインスレッドはシリアルからNMEAを読み続け、`GGA/RMC/GLL/VTG/GSA/GSV` などを構造化して `Snapshot` に蓄積します。
+- 送信間隔ごとに `Snapshot.build_payload()` でJSONを作り、spoolディレクトリに原子的に保存します。
+- `unified_worker()` はspool内の古いJSONから順にUnified EndpointへPOSTします。
+- HTTP失敗やLTE一時断が起きた場合、送信できなかったpayloadはspoolに残り、次回以降に再送されます。
+- シリアル読み取りとHTTP POSTは別スレッドなので、Unified Endpoint側が詰まってもNMEA読み取り窓は止まりません。
+- HTTP 2xx以外、タイムアウト、接続エラーはログに出し、`UNIFIED_POST_RETRY_DELAY` 後に再試行します。
+
+### Unified payload
+
+`rtk_nmea_unified.py` は単一の最新位置だけではなく、送信窓内のNMEAセンテンスをキー付きJSONとして送信します。
+
+```json
+{
+  "source": "qlm29h_nmea",
+  "serial_port": "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
+  "sent_at": "2026-07-11T06:32:12.000000+00:00",
+  "window": {
+    "started_at": "2026-07-11T06:32:07.000000+00:00",
+    "ended_at": "2026-07-11T06:32:12.000000+00:00",
+    "duration_sec": 5.0
+  },
+  "sentence_counts": {
+    "GNGGA": 5,
+    "GNRMC": 5,
+    "GPGSV": 25
+  },
+  "quality_label": "Fixed RTK",
+  "nmea": {
+    "GNGGA": {},
+    "GNRMC": {},
+    "GPGSV": []
+  }
+}
+```
+
+## Difference between the scripts
+
+| Item | `rtk_client.py` | `rtk_harvest.py` | `rtk_nmea_unified.py` |
+|---|---|---|---|
+| RTK enable command | Yes | Yes | Yes |
+| NTRIP connection | Yes | Yes | Yes |
+| RTCM forwarding to QLM29H | Yes | Yes | Yes |
+| Latest GGA tracking | Yes | Yes | Yes |
+| Parsed NMEA scope | GGA status only | GGA position payload | GGA/RMC/GLL/VTG/GSA/GSV and generic sentences |
+| Unified Endpoint POST | No | Yes | Yes |
+| HTTP send path | Not applicable | Inline sender thread | Disk spool + sender thread |
+| No Fix handling | Logs only | `quality=0` is skipped | All NMEA can be sent, including No Fix windows |
+| LTE/HTTP interruption tolerance | Not applicable | Failed payload is dropped | Payload remains in spool and is retried |
+| Main purpose | RTK/NTRIP behavior check | RTK/NTRIP plus location data upload | Long-running daemon and full NMEA JSON upload |
