@@ -12,13 +12,12 @@
 
 ```bash
 sudo systemctl stop qlm29h-nmea-unified.service
+trap 'sudo systemctl start qlm29h-nmea-unified.service' EXIT
 
 cd /home/pi/qlm29h-samples
 ./.venv/bin/python dr_calibrate.py \
   --serial-port /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 \
   --timeout 900
-
-sudo systemctl start qlm29h-nmea-unified.service
 ```
 
 プログラムを開始したら、7.2 km/h（2 m/s）を超える速度で走行し、3～4回右左折します。ガイド上の校正時間の目安は約3分です。
@@ -55,4 +54,4 @@ sudo systemctl start qlm29h-nmea-unified.service
 - `--no-save`: 完了後に`PQTMDRSAVE`を送りません。hot start mode 1/2には自動保存機能があるため、保存を完全に避ける検証では`--hot-start-mode unchanged`も指定します。
 - `--keep-message-output`: 終了時に`PQTMDRCAL`の出力レートを元へ戻さず、1 Hz出力を維持します。
 
-Ctrl+C、タイムアウト、通信エラーの場合も、`PQTMDRCAL`の出力レートは可能な限り実行前の値へ戻します。プログラム終了後は、成否にかかわらずsystemdサービスを再開してください。校正中は通常のUnified Endpoint送信デーモンを停止するため、その時間帯の送信データは生成されません。
+Ctrl+C、タイムアウト、通信エラーの場合も、`PQTMDRCAL`の出力レートは可能な限り実行前の値へ戻します。上記の`EXIT`トラップにより、シェル終了時にはsystemdサービスを再開します。校正中は通常のUnified Endpoint送信デーモンを停止するため、その時間帯の送信データは生成されません。

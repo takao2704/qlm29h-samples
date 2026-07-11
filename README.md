@@ -53,9 +53,9 @@ python3 rtk_harvest.py
 
 ```bash
 sudo systemctl stop qlm29h-nmea-unified.service
+trap 'sudo systemctl start qlm29h-nmea-unified.service' EXIT
 ./.venv/bin/python dr_calibrate.py \
   --serial-port /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
-sudo systemctl start qlm29h-nmea-unified.service
 ```
 
 詳細は [docs/dr-calibration.md](docs/dr-calibration.md) を参照してください。
