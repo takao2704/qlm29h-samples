@@ -105,7 +105,8 @@ sequenceDiagram
 ## rtk_nmea_unified.py
 
 `rtk_nmea_unified.py` は長時間稼働と systemd デーモン化を前提にしたサンプルです。
-`rtk_harvest.py` より多くのNMEAセンテンスを構造化し、Unified Endpoint送信はディスク上のspoolを経由します。
+`rtk_harvest.py` より多くのNMEAセンテンスを構造化し、Unified Endpoint送信はspoolを経由します。
+spool先はSDカード上のディレクトリまたはRAM上のtmpfsを選択できます。
 
 ### 起動シーケンス
 
@@ -116,7 +117,7 @@ sequenceDiagram
     participant Serial as QLM29H serial
     participant Ntrip as ntrip_worker thread
     participant Sender as unified_worker thread
-    participant Spool as spool directory
+    participant Spool as spool directory (disk or tmpfs)
     participant Caster as NTRIP caster
     participant Unified as Unified Endpoint
 
@@ -141,12 +142,15 @@ sequenceDiagram
 
 - `main()` は環境変数またはCLI引数からシリアルポート、Unified Endpoint、NTRIP設定を読みます。
 - systemdで使う場合は `SERIAL_PORT=/dev/serial/by-id/...` のような安定したデバイス名を指定します。
+- SDカードへの書き込みを避ける場合は、`UNIFIED_SPOOL_STORAGE=ram` または `UNIFIED_SPOOL_DIR=/run/...` でRAM上のtmpfsをspool先にします。
 - 起動直後に `PQTMCFGRTK,W,1,1` を送り、RTK/RTD auto modeを有効化します。
 - `ntrip_worker()` はNTRIP casterへ接続し、最新の `GGA` を1秒ごとに返しながらRTCMをシリアルへ書き込みます。
 - メインスレッドはシリアルからNMEAを読み続け、`GGA/RMC/GLL/VTG/GSA/GSV` などを構造化して `Snapshot` に蓄積します。
 - 送信間隔ごとに `Snapshot.build_payload()` でJSONを作り、spoolディレクトリに原子的に保存します。
 - `unified_worker()` はspool内の古いJSONから順にUnified EndpointへPOSTします。
 - HTTP失敗やLTE一時断が起きた場合、送信できなかったpayloadはspoolに残り、次回以降に再送されます。
+- `UNIFIED_MAX_SPOOL_FILES` がリングバッファの最大件数で、上限に達すると古いpayloadから削除します。
+- RAM上のspoolは再起動で消えますが、SDカードへの書き込みを避けられます。
 - シリアル読み取りとHTTP POSTは別スレッドなので、Unified Endpoint側が詰まってもNMEA読み取り窓は止まりません。
 - HTTP 2xx以外、タイムアウト、接続エラーはログに出し、`UNIFIED_POST_RETRY_DELAY` 後に再試行します。
 
@@ -188,7 +192,7 @@ sequenceDiagram
 | Latest GGA tracking | Yes | Yes | Yes |
 | Parsed NMEA scope | GGA status only | GGA position payload | GGA/RMC/GLL/VTG/GSA/GSV and generic sentences |
 | Unified Endpoint POST | No | Yes | Yes |
-| HTTP send path | Not applicable | Inline sender thread | Disk spool + sender thread |
+| HTTP send path | Not applicable | Inline sender thread | Disk/RAM spool + sender thread |
 | No Fix handling | Logs only | `quality=0` is skipped | All NMEA can be sent, including No Fix windows |
-| LTE/HTTP interruption tolerance | Not applicable | Failed payload is dropped | Payload remains in spool and is retried |
+| LTE/HTTP interruption tolerance | Not applicable | Failed payload is dropped | Payload remains in spool and is retried until ring buffer limit |
 | Main purpose | RTK/NTRIP behavior check | RTK/NTRIP plus location data upload | Long-running daemon and full NMEA JSON upload |

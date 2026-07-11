@@ -39,6 +39,30 @@ python3 rtk_harvest.py
 
 シリアルポートやNTRIP接続先などは各スクリプト先頭の設定セクションを編集してください。
 
+### `rtk_nmea_unified.py` のspool先
+
+`rtk_nmea_unified.py` はUnified Endpoint送信用payloadを一度spoolしてから送信します。
+SDカードへの継続書き込みを避けたい場合は、RAM上のtmpfsをspool先にできます。
+
+```bash
+export UNIFIED_SPOOL_STORAGE=ram
+export UNIFIED_MAX_SPOOL_FILES=7200
+python3 rtk_nmea_unified.py
+```
+
+`UNIFIED_SPOOL_STORAGE=ram` では、`UNIFIED_SPOOL_DIR` 未指定時に `/dev/shm/qlm29h-nmea-unified/spool` を使います。
+systemdで運用する場合は、`RuntimeDirectory` を使って `/run/qlm29h-nmea-unified/spool` を指定する構成も使えます。
+
+```ini
+RuntimeDirectory=qlm29h-nmea-unified
+Environment=UNIFIED_SPOOL_STORAGE=ram
+Environment=UNIFIED_SPOOL_DIR=/run/qlm29h-nmea-unified/spool
+Environment=UNIFIED_MAX_SPOOL_FILES=7200
+```
+
+`UNIFIED_MAX_SPOOL_FILES` はリングバッファの最大件数です。上限に達すると古いpayloadから削除します。
+RAM上のspoolは再起動で消えるため、SDカード保護を優先する用途向けです。
+
 ## ライセンス
 
 このリポジトリのコードは [MIT License](LICENSE) で提供します。

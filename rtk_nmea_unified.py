@@ -30,6 +30,9 @@ GGA_QUALITY = {
     6: "Estimated / Dead Reckoning",
 }
 
+DEFAULT_DISK_SPOOL_DIR = "unified_spool"
+DEFAULT_RAM_SPOOL_DIR = "/dev/shm/qlm29h-nmea-unified/spool"
+
 RMC_STATUS = {"A": "Valid", "V": "Warning"}
 FIX_TYPE = {1: "No Fix", 2: "2D", 3: "3D"}
 
@@ -475,6 +478,14 @@ def post_payload(endpoint: str, payload: dict[str, Any], timeout: float) -> int:
     return response.status_code
 
 
+def resolve_spool_dir(args: argparse.Namespace) -> pathlib.Path:
+    if args.spool_dir:
+        return pathlib.Path(args.spool_dir)
+    if args.spool_storage == "ram":
+        return pathlib.Path(DEFAULT_RAM_SPOOL_DIR)
+    return pathlib.Path(DEFAULT_DISK_SPOOL_DIR)
+
+
 def spooled_payloads(spool_dir: pathlib.Path) -> list[pathlib.Path]:
     return sorted(spool_dir.glob("*.json"))
 
@@ -595,7 +606,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interval", type=float, default=float(os.environ.get("UNIFIED_INTERVAL", "5")))
     parser.add_argument("--post-timeout", type=float, default=10)
     parser.add_argument("--max-pending", type=int, default=int(os.environ.get("UNIFIED_MAX_PENDING", "120")))
-    parser.add_argument("--spool-dir", default=os.environ.get("UNIFIED_SPOOL_DIR", "unified_spool"))
+    parser.add_argument(
+        "--spool-storage",
+        choices=("disk", "ram"),
+        default=os.environ.get("UNIFIED_SPOOL_STORAGE", "disk").lower(),
+        help="Spool storage class used when --spool-dir is not set.",
+    )
+    parser.add_argument(
+        "--spool-dir",
+        default=os.environ.get("UNIFIED_SPOOL_DIR"),
+        help="Explicit spool directory. Overrides --spool-storage default paths.",
+    )
     parser.add_argument(
         "--max-spool-files",
         type=int,
@@ -610,7 +631,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ntrip-pass", default=os.environ.get("NTRIP_PASS", ""))
     parser.add_argument("--no-ntrip", action="store_true")
     parser.add_argument("--max-posts", type=int, default=0)
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.spool_dir = str(resolve_spool_dir(args))
+    return args
 
 
 def main() -> int:
@@ -632,6 +655,11 @@ def main() -> int:
 
     snapshot = Snapshot()
     spool_dir = pathlib.Path(args.spool_dir)
+    print(
+        f"[UNIFIED] Spool storage={args.spool_storage} dir={spool_dir} "
+        f"max_files={args.max_spool_files}",
+        flush=True,
+    )
     send_wake = threading.Event()
     threading.Thread(target=unified_worker, args=(args, send_wake), daemon=True).start()
     next_post = time.monotonic() + args.interval
