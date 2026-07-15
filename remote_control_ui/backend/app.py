@@ -9,6 +9,7 @@ import mimetypes
 import os
 import pathlib
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -255,6 +256,7 @@ def save_history(command: dict[str, Any], response: dict[str, Any]) -> None:
 
 def load_history(limit: int = 20) -> list[dict[str, Any]]:
     import boto3
+    from boto3.dynamodb.types import TypeDeserializer
 
     response = boto3.client("dynamodb").query(
         TableName=os.environ["HISTORY_TABLE"],
@@ -263,7 +265,7 @@ def load_history(limit: int = 20) -> list[dict[str, Any]]:
         ScanIndexForward=False,
         Limit=limit,
     )
-    deserializer = boto3.dynamodb.types.TypeDeserializer()
+    deserializer = TypeDeserializer()
     return [{key: deserializer.deserialize(value) for key, value in item.items()} for item in response["Items"]]
 
 
@@ -335,4 +337,5 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
             value["details"] = exc.details
         return json_response(exc.status_code, value)
     except Exception:
+        traceback.print_exc()
         return json_response(500, {"error": "Unexpected server error"})

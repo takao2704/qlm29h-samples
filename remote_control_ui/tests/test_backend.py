@@ -3,6 +3,7 @@ import json
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 
 MODULE_PATH = pathlib.Path(__file__).parents[1] / "backend" / "app.py"
@@ -63,6 +64,25 @@ class SoracomClientTests(unittest.TestCase):
         self.assertTrue(command["request_id"].startswith("web-"))
         with self.assertRaisesRegex(MODULE.RemoteControlError, "Unsupported"):
             MODULE.normalize_command_request({"action": "shell"})
+
+    def test_load_history_imports_dynamodb_deserializer_explicitly(self):
+        dynamodb = mock.Mock()
+        dynamodb.query.return_value = {
+            "Items": [
+                {
+                    "device_id": {"S": "takao_01s_05"},
+                    "sort_key": {"S": "2026-07-15T13:31:14+00:00#web-1"},
+                    "action": {"S": "transmission_stop"},
+                }
+            ]
+        }
+
+        with mock.patch.dict(MODULE.os.environ, {"HISTORY_TABLE": "test-history"}), \
+                mock.patch("boto3.client", return_value=dynamodb):
+            history = MODULE.load_history()
+
+        self.assertEqual(history[0]["action"], "transmission_stop")
+        dynamodb.query.assert_called_once()
 
 
 if __name__ == "__main__":
