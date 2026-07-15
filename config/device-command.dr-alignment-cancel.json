@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "request_id": "dr-alignment-cancel-20260715-001",
+  "action": "dr_alignment_cancel",
+  "parameters": {
+    "target_request_id": "dr-alignment-20260715-001"
+  }
+}

@@ -1,0 +1,15 @@
+[Unit]
+Description=QLM29H device command controller
+After=local-fs.target qlm29h-nmea-unified.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/qlm29h-samples
+ExecStart=/home/pi/qlm29h-samples/.venv/bin/python /home/pi/qlm29h-samples/device_control.py
+Restart=always
+RestartSec=2
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

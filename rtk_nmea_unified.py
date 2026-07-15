@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import collections
+import copy
 import datetime as dt
 import json
 import os
@@ -32,6 +33,45 @@ GGA_QUALITY = {
 
 DEFAULT_DISK_SPOOL_DIR = "unified_spool"
 DEFAULT_RAM_SPOOL_DIR = "/dev/shm/qlm29h-nmea-unified/spool"
+DEFAULT_PAYLOAD_CONTROL_PATH = "/home/pi/.config/qlm29h/payload-control.json"
+
+PAYLOAD_CONTROL_BASE = {
+    "version": 1,
+    "enabled": True,
+    "interval_sec": None,
+    "preset": "full",
+    "include_nmea": True,
+    "include_sentences": None,
+    "exclude_sentences": [],
+    "include_raw_sentence": True,
+    "include_raw_fields": True,
+    "include_parsed_fields": True,
+    "include_nmea_metadata": True,
+    "include_satellite_details": True,
+    "include_sentence_counts": True,
+    "include_latest_position": True,
+    "include_position_aliases": True,
+    "field_allowlist": {},
+}
+
+PAYLOAD_CONTROL_PRESETS = {
+    "full": {},
+    "compact": {
+        "include_raw_sentence": False,
+        "include_raw_fields": False,
+        "include_nmea_metadata": False,
+    },
+    "position": {
+        "include_nmea": False,
+        "include_sentence_counts": False,
+        "include_raw_sentence": False,
+        "include_raw_fields": False,
+        "include_nmea_metadata": False,
+    },
+    "custom": {},
+}
+
+PAYLOAD_CONTROL_KEYS = set(PAYLOAD_CONTROL_BASE)
 
 RMC_STATUS = {"A": "Valid", "V": "Warning"}
 FIX_TYPE = {1: "No Fix", 2: "2D", 3: "3D"}
@@ -69,6 +109,213 @@ def compact(value: Any) -> Any:
     if isinstance(value, list):
         return [compact(v) for v in value if v not in (None, "", [], {})]
     return value
+
+
+def _validate_string_list(value: Any, name: str, *, nullable: bool = False) -> list[str] | None:
+    if value is None and nullable:
+        return None
+    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
+        raise ValueError(f"{name} must be a list of non-empty strings")
+    return list(dict.fromkeys(value))
+
+
+def normalize_payload_control(raw: dict[str, Any], default_interval: float) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError("payload control must be a JSON object")
+
+    unknown = sorted(set(raw) - PAYLOAD_CONTROL_KEYS)
+    if unknown:
+        raise ValueError(f"unknown payload control keys: {', '.join(unknown)}")
+
+    version = raw.get("version", 1)
+    if version != 1:
+        raise ValueError(f"unsupported payload control version: {version}")
+
+    preset = raw.get("preset", "full")
+    if preset not in PAYLOAD_CONTROL_PRESETS:
+        raise ValueError(f"preset must be one of: {', '.join(PAYLOAD_CONTROL_PRESETS)}")
+
+    config = copy.deepcopy(PAYLOAD_CONTROL_BASE)
+    config.update(copy.deepcopy(PAYLOAD_CONTROL_PRESETS[preset]))
+    config.update(raw)
+    config["preset"] = preset
+
+    bool_keys = (
+        "enabled",
+        "include_nmea",
+        "include_raw_sentence",
+        "include_raw_fields",
+        "include_parsed_fields",
+        "include_nmea_metadata",
+        "include_satellite_details",
+        "include_sentence_counts",
+        "include_latest_position",
+        "include_position_aliases",
+    )
+    for key in bool_keys:
+        if not isinstance(config[key], bool):
+            raise ValueError(f"{key} must be true or false")
+
+    interval = config.get("interval_sec")
+    if interval is None:
+        interval = default_interval
+    if isinstance(interval, bool) or not isinstance(interval, (int, float)) or interval <= 0:
+        raise ValueError("interval_sec must be a number greater than 0")
+    config["interval_sec"] = float(interval)
+
+    config["include_sentences"] = _validate_string_list(
+        config.get("include_sentences"), "include_sentences", nullable=True
+    )
+    config["exclude_sentences"] = _validate_string_list(config.get("exclude_sentences"), "exclude_sentences")
+
+    allowlist = config.get("field_allowlist")
+    if not isinstance(allowlist, dict):
+        raise ValueError("field_allowlist must be an object")
+    normalized_allowlist = {}
+    for sentence_id, field_names in allowlist.items():
+        if not isinstance(sentence_id, str) or not sentence_id:
+            raise ValueError("field_allowlist keys must be non-empty strings")
+        normalized_allowlist[sentence_id] = _validate_string_list(
+            field_names, f"field_allowlist.{sentence_id}"
+        )
+    config["field_allowlist"] = normalized_allowlist
+    return config
+
+
+def sentence_selected(sentence_id: str, config: dict[str, Any]) -> bool:
+    message_type = sentence_id[2:] if len(sentence_id) > 2 else sentence_id
+    aliases = {sentence_id, message_type}
+    included = config["include_sentences"]
+    if included is not None and aliases.isdisjoint(included):
+        return False
+    return aliases.isdisjoint(config["exclude_sentences"])
+
+
+def _filter_nmea_object(sentence_id: str, item: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    filtered = copy.deepcopy(item)
+    if not config["include_raw_sentence"]:
+        filtered.pop("raw", None)
+    if not config["include_raw_fields"]:
+        filtered.pop("raw_fields", None)
+
+    if not config["include_nmea_metadata"]:
+        for key in ("sentence_id", "talker", "message_type", "checksum", "checksum_valid", "received_at"):
+            filtered.pop(key, None)
+
+    if not config["include_parsed_fields"]:
+        filtered.pop("fields", None)
+        return compact(filtered)
+
+    fields = filtered.get("fields")
+    if not isinstance(fields, dict):
+        return compact(filtered)
+
+    if not config["include_raw_fields"]:
+        fields = {
+            key: value
+            for key, value in fields.items()
+            if not key.startswith("raw_field_") and not key.endswith("_raw")
+        }
+    if not config["include_satellite_details"]:
+        fields.pop("satellites", None)
+
+    message_type = item.get("message_type") or (sentence_id[2:] if len(sentence_id) > 2 else sentence_id)
+    allowlist = config["field_allowlist"].get(sentence_id)
+    if allowlist is None:
+        allowlist = config["field_allowlist"].get(message_type)
+    if allowlist is not None:
+        fields = {key: value for key, value in fields.items() if key in allowlist}
+    filtered["fields"] = fields
+    return compact(filtered)
+
+
+def apply_payload_control(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    filtered = copy.deepcopy(payload)
+
+    if config["include_nmea"]:
+        nmea = filtered.get("nmea", {})
+        selected_nmea = {}
+        if isinstance(nmea, dict):
+            for sentence_id, value in nmea.items():
+                if not sentence_selected(sentence_id, config):
+                    continue
+                if isinstance(value, list):
+                    selected_nmea[sentence_id] = [
+                        _filter_nmea_object(sentence_id, item, config)
+                        for item in value
+                        if isinstance(item, dict)
+                    ]
+                elif isinstance(value, dict):
+                    selected_nmea[sentence_id] = _filter_nmea_object(sentence_id, value, config)
+        filtered["nmea"] = selected_nmea
+    else:
+        filtered.pop("nmea", None)
+
+    if config["include_sentence_counts"]:
+        counts = filtered.get("sentence_counts", {})
+        if isinstance(counts, dict):
+            filtered["sentence_counts"] = {
+                sentence_id: count
+                for sentence_id, count in counts.items()
+                if sentence_selected(sentence_id, config)
+            }
+    else:
+        filtered.pop("sentence_counts", None)
+
+    if not config["include_latest_position"]:
+        filtered.pop("latest_position", None)
+    if not config["include_position_aliases"]:
+        for key in ("lat", "lon", "quality", "quality_label"):
+            filtered.pop(key, None)
+    return compact(filtered)
+
+
+class PayloadControl:
+    def __init__(self, path: str | None, default_interval: float) -> None:
+        self.path = pathlib.Path(path) if path else None
+        self.default_interval = default_interval
+        self.config = normalize_payload_control({}, default_interval)
+        self._signature: tuple[int, int] | None | object = object()
+
+    def refresh(self) -> bool:
+        if self.path is None:
+            return False
+        try:
+            stat = self.path.stat()
+            signature: tuple[int, int] | None = (stat.st_mtime_ns, stat.st_size)
+        except FileNotFoundError:
+            signature = None
+        except OSError as exc:
+            print(f"[CONTROL] Cannot inspect {self.path}: {exc}; keeping previous settings", flush=True)
+            return False
+
+        if signature == self._signature:
+            return False
+        self._signature = signature
+
+        if signature is None:
+            new_config = normalize_payload_control({}, self.default_interval)
+            changed = new_config != self.config
+            self.config = new_config
+            print(f"[CONTROL] {self.path} not found; using full payload at {self.default_interval:g}s", flush=True)
+            return changed
+
+        try:
+            with self.path.open(encoding="utf-8") as handle:
+                raw = json.load(handle)
+            new_config = normalize_payload_control(raw, self.default_interval)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            print(f"[CONTROL] Invalid {self.path}: {exc}; keeping previous settings", flush=True)
+            return False
+
+        changed = new_config != self.config
+        self.config = new_config
+        print(
+            f"[CONTROL] Loaded preset={new_config['preset']} enabled={new_config['enabled']} "
+            f"interval={new_config['interval_sec']:g}s",
+            flush=True,
+        )
+        return changed
 
 
 def nmea_checksum(data: str) -> str:
@@ -662,13 +909,24 @@ def mark_bad_payload(path: pathlib.Path) -> None:
         pass
 
 
-def unified_worker(args: argparse.Namespace, wake_event: threading.Event) -> None:
+def unified_worker(
+    args: argparse.Namespace,
+    wake_event: threading.Event,
+    transmission_enabled: threading.Event | None = None,
+) -> None:
     global running
 
     posts = 0
     spool_dir = pathlib.Path(args.spool_dir)
+    if transmission_enabled is None:
+        transmission_enabled = threading.Event()
+        transmission_enabled.set()
 
     while running:
+        if not transmission_enabled.is_set():
+            wake_event.wait(1.0)
+            wake_event.clear()
+            continue
         try:
             spool_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -684,6 +942,8 @@ def unified_worker(args: argparse.Namespace, wake_event: threading.Event) -> Non
 
         sent_now = 0
         for path in files[: max(1, args.flush_burst)]:
+            if not transmission_enabled.is_set():
+                break
             try:
                 queued = load_spooled_payload(path)
             except Exception as exc:  # noqa: BLE001
@@ -737,6 +997,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baud", type=int, default=int(os.environ.get("SERIAL_BAUD", "115200")))
     parser.add_argument("--endpoint", default=os.environ.get("UNIFIED_ENDPOINT", "http://unified.soracom.io"))
     parser.add_argument("--interval", type=float, default=float(os.environ.get("UNIFIED_INTERVAL", "5")))
+    parser.add_argument(
+        "--payload-control",
+        default=os.environ.get("UNIFIED_PAYLOAD_CONTROL", DEFAULT_PAYLOAD_CONTROL_PATH),
+        help="JSON file controlling send interval and payload fields. Reloaded automatically when changed.",
+    )
     parser.add_argument("--post-timeout", type=float, default=10)
     parser.add_argument("--max-pending", type=int, default=int(os.environ.get("UNIFIED_MAX_PENDING", "120")))
     parser.add_argument(
@@ -812,6 +1077,8 @@ def main() -> int:
         threading.Thread(target=ntrip_worker, args=(args, ser), daemon=True).start()
 
     snapshot = Snapshot()
+    payload_control = PayloadControl(args.payload_control, args.interval)
+    payload_control.refresh()
     spool_dir = pathlib.Path(args.spool_dir)
     print(
         f"[UNIFIED] Spool storage={args.spool_storage} dir={spool_dir} "
@@ -819,8 +1086,15 @@ def main() -> int:
         flush=True,
     )
     send_wake = threading.Event()
-    threading.Thread(target=unified_worker, args=(args, send_wake), daemon=True).start()
-    next_post = time.monotonic() + args.interval
+    transmission_enabled = threading.Event()
+    if payload_control.config["enabled"]:
+        transmission_enabled.set()
+    threading.Thread(
+        target=unified_worker,
+        args=(args, send_wake, transmission_enabled),
+        daemon=True,
+    ).start()
+    next_post = time.monotonic() + payload_control.config["interval_sec"]
     try:
         while running:
             if fatal_serial_error.is_set():
@@ -840,11 +1114,23 @@ def main() -> int:
                             latest_gga = parsed["raw"]
 
             now = time.monotonic()
+            if payload_control.refresh():
+                snapshot.reset()
+                next_post = now + payload_control.config["interval_sec"]
+                if payload_control.config["enabled"]:
+                    transmission_enabled.set()
+                    send_wake.set()
+                else:
+                    transmission_enabled.clear()
             if now >= next_post:
-                next_post = now + args.interval
+                next_post = now + payload_control.config["interval_sec"]
                 if not snapshot.has_data():
                     continue
+                if not payload_control.config["enabled"]:
+                    snapshot.reset()
+                    continue
                 payload = snapshot.build_payload(args.serial_port)
+                payload = apply_payload_control(payload, payload_control.config)
                 spooled_path = spool_payload(spool_dir, payload, args.max_spool_files, args.max_spool_bytes)
                 if spooled_path is None:
                     print("[UNIFIED] Current payload was not spooled; resetting snapshot", flush=True)

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QLM29H device command status",
+  "type": "object",
+  "required": [
+    "version",
+    "status",
+    "updated_at"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "request_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "action": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "enum": [
+        "accepted",
+        "stopping_sender",
+        "running",
+        "cancelling",
+        "cancelled",
+        "completed",
+        "failed",
+        "invalid"
+      ]
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "calibration_state": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3
+    },
+    "navigation_type": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3
+    },
+    "transmission_enabled": {
+      "type": "boolean"
+    },
+    "sender_restart_ok": {
+      "type": "boolean"
+    },
+    "error": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QLM29H device command",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "request_id",
+    "action"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "action": {
+      "enum": [
+        "transmission_start",
+        "transmission_stop",
+        "dr_alignment_start",
+        "dr_alignment_cancel"
+      ]
+    },
+    "parameters": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "dr_alignment_start"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "timeout_sec": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 7200
+              },
+              "minimum_state": {
+                "enum": [
+                  2,
+                  3
+                ]
+              },
+              "clear_existing": {
+                "type": "boolean"
+              },
+              "hot_start_mode": {
+                "enum": [
+                  "1",
+                  "2",
+                  "unchanged"
+                ]
+              },
+              "save_on_complete": {
+                "type": "boolean"
+              },
+              "keep_message_output": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "dr_alignment_cancel"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "parameters"
+        ],
+        "properties": {
+          "parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "target_request_id"
+            ],
+            "properties": {
+              "target_request_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

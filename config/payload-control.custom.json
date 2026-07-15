@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "enabled": true,
+  "interval_sec": 10,
+  "preset": "custom",
+  "include_sentences": [
+    "GGA",
+    "RMC"
+  ],
+  "exclude_sentences": [],
+  "include_raw_sentence": false,
+  "include_raw_fields": false,
+  "include_parsed_fields": true,
+  "include_nmea_metadata": false,
+  "include_satellite_details": false,
+  "include_sentence_counts": true,
+  "include_latest_position": true,
+  "include_position_aliases": true,
+  "field_allowlist": {
+    "GGA": [
+      "utc_time",
+      "latitude",
+      "longitude",
+      "fix_quality",
+      "fix_quality_label",
+      "satellites_used",
+      "hdop",
+      "altitude"
+    ],
+    "RMC": [
+      "date",
+      "utc_time",
+      "status",
+      "status_label",
+      "speed_kmh",
+      "course_degrees"
+    ]
+  }
+}

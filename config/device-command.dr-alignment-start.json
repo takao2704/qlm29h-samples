@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "request_id": "dr-alignment-20260715-001",
+  "action": "dr_alignment_start",
+  "parameters": {
+    "timeout_sec": 900,
+    "minimum_state": 2,
+    "clear_existing": false,
+    "hot_start_mode": "2",
+    "save_on_complete": true,
+    "keep_message_output": false
+  }
+}

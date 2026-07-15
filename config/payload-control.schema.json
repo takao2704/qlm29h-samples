@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "QLM29H payload control",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "interval_sec": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "preset": {
+      "enum": [
+        "full",
+        "compact",
+        "position",
+        "custom"
+      ]
+    },
+    "include_nmea": {
+      "type": "boolean"
+    },
+    "include_sentences": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "exclude_sentences": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "include_raw_sentence": {
+      "type": "boolean"
+    },
+    "include_raw_fields": {
+      "type": "boolean"
+    },
+    "include_parsed_fields": {
+      "type": "boolean"
+    },
+    "include_nmea_metadata": {
+      "type": "boolean"
+    },
+    "include_satellite_details": {
+      "type": "boolean"
+    },
+    "include_sentence_counts": {
+      "type": "boolean"
+    },
+    "include_latest_position": {
+      "type": "boolean"
+    },
+    "include_position_aliases": {
+      "type": "boolean"
+    },
+    "field_allowlist": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "uniqueItems": true
+      }
+    }
+  }
+}

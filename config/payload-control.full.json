@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "enabled": true,
+  "interval_sec": 5,
+  "preset": "full"
+}
