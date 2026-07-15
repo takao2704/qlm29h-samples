@@ -138,16 +138,12 @@ Resources:
             ApiId: !Ref DashboardApi
             Path: /
             Method: GET
-            Auth:
-              Authorizer: NONE
         Static:
           Type: HttpApi
           Properties:
             ApiId: !Ref DashboardApi
             Path: /{proxy+}
             Method: GET
-            Auth:
-              Authorizer: NONE
         GetDevice:
           Type: HttpApi
           Properties:
