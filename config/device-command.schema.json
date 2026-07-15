@@ -21,6 +21,7 @@
       "enum": [
         "transmission_start",
         "transmission_stop",
+        "payload_config_update",
         "dr_alignment_start",
         "dr_alignment_cancel"
       ]
@@ -30,6 +31,34 @@
     }
   },
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "payload_config_update"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "parameters"
+        ],
+        "properties": {
+          "parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "configuration"
+            ],
+            "properties": {
+              "configuration": {
+                "$ref": "payload-control.schema.json"
+              }
+            }
+          }
+        }
+      }
+    },
     {
       "if": {
         "properties": {

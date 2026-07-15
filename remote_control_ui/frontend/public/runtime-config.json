@@ -1,0 +1,8 @@
+{
+  "apiBaseUrl": "",
+  "deviceId": "takao_01s_05",
+  "cognitoIssuer": "",
+  "cognitoDomain": "",
+  "cognitoClientId": "",
+  "mockMode": "true"
+}

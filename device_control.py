@@ -25,6 +25,7 @@ DEFAULT_SENDER_SERVICE = "qlm29h-nmea-unified.service"
 COMMAND_ACTIONS = {
     "transmission_start",
     "transmission_stop",
+    "payload_config_update",
     "dr_alignment_start",
     "dr_alignment_cancel",
 }
@@ -89,6 +90,17 @@ def normalize_device_command(raw: dict[str, Any]) -> dict[str, Any]:
     if action in {"transmission_start", "transmission_stop"}:
         _reject_unknown(parameters, set(), f"{action} parameters")
         normalized_parameters = {}
+    elif action == "payload_config_update":
+        from rtk_nmea_unified import normalize_payload_control
+
+        _reject_unknown(parameters, {"configuration"}, "payload_config_update parameters")
+        configuration = parameters.get("configuration")
+        if not isinstance(configuration, dict):
+            raise ValueError("payload_config_update requires a configuration object")
+        normalized_configuration = normalize_payload_control(configuration, default_interval=5.0)
+        if "enabled" not in configuration:
+            normalized_configuration.pop("enabled", None)
+        normalized_parameters = {"configuration": normalized_configuration}
     elif action == "dr_alignment_cancel":
         _reject_unknown(parameters, {"target_request_id"}, "dr_alignment_cancel parameters")
         target = parameters.get("target_request_id")
@@ -157,6 +169,18 @@ def set_transmission_enabled(path: pathlib.Path, enabled: bool) -> dict[str, Any
     config["enabled"] = enabled
     atomic_write_json(path, config)
     return config
+
+
+def set_payload_configuration(path: pathlib.Path, configuration: dict[str, Any]) -> dict[str, Any]:
+    try:
+        current = load_json_object(path)
+    except FileNotFoundError:
+        current = {}
+    value = dict(configuration)
+    if "enabled" not in value:
+        value["enabled"] = current.get("enabled", True)
+    atomic_write_json(path, value)
+    return value
 
 
 def service_is_active(service_name: str) -> bool:
@@ -304,6 +328,8 @@ class DeviceController:
             action = command["action"]
             if action in {"transmission_start", "transmission_stop"}:
                 self._handle_transmission(command, action == "transmission_start")
+            elif action == "payload_config_update":
+                self._handle_payload_configuration(command)
             elif action == "dr_alignment_start":
                 self._handle_alignment(command)
             else:
@@ -326,6 +352,27 @@ class DeviceController:
                 "completed",
                 transmission_enabled=enabled,
                 payload_preset=config.get("preset", "full"),
+            ),
+        )
+
+    def _handle_payload_configuration(self, command: dict[str, Any]) -> None:
+        try:
+            config = set_payload_configuration(
+                self.payload_control_path,
+                command["parameters"]["configuration"],
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            atomic_write_json(self.status_path, status_for(command, "failed", error=str(exc)))
+            return
+        atomic_write_json(
+            self.status_path,
+            status_for(
+                command,
+                "completed",
+                transmission_enabled=config["enabled"],
+                payload_preset=config["preset"],
+                interval_sec=config["interval_sec"],
+                include_sentences=config["include_sentences"],
             ),
         )
 

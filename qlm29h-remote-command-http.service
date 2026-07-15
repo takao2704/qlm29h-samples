@@ -1,0 +1,22 @@
+[Unit]
+Description=QLM29H SORACOM Remote Command HTTP endpoint
+After=network-online.target qlm29h-device-control.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/qlm29h-samples
+EnvironmentFile=/home/pi/.config/qlm29h/remote-command.env
+ExecStart=/home/pi/qlm29h-samples/.venv/bin/python /home/pi/qlm29h-samples/remote_command_http.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/.config/qlm29h
+
+[Install]
+WantedBy=multi-user.target

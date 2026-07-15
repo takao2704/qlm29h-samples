@@ -73,6 +73,35 @@ class DeviceControlTests(unittest.TestCase):
             self.assertTrue(started["enabled"])
             self.assertEqual(started["preset"], "compact")
 
+    def test_payload_configuration_command_is_normalized_and_preserves_enabled(self):
+        command = MODULE.normalize_device_command(
+            {
+                "request_id": "payload-1",
+                "action": "payload_config_update",
+                "parameters": {
+                    "configuration": {
+                        "version": 1,
+                        "preset": "custom",
+                        "interval_sec": 10,
+                        "include_sentences": ["GGA", "RMC", "GGA"],
+                    }
+                },
+            }
+        )
+        configuration = command["parameters"]["configuration"]
+        self.assertEqual(configuration["preset"], "custom")
+        self.assertEqual(configuration["interval_sec"], 10.0)
+        self.assertEqual(configuration["include_sentences"], ["GGA", "RMC"])
+        self.assertNotIn("enabled", configuration)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "payload-control.json"
+            path.write_text(json.dumps({"version": 1, "enabled": False}), encoding="utf-8")
+            saved = MODULE.set_payload_configuration(path, configuration)
+            self.assertFalse(saved["enabled"])
+            self.assertEqual(saved["include_sentences"], ["GGA", "RMC"])
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
     def test_calibration_command_maps_all_parameters(self):
         with tempfile.TemporaryDirectory() as directory:
             args = controller_args(directory)

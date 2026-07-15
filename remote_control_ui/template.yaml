@@ -1,0 +1,182 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: QLM29H Remote Control dashboard using SORACOM Remote Command HTTP
+
+Parameters:
+  SoracomSimId:
+    Type: String
+    Default: "8942310224000601522"
+    Description: SORACOM SIM ID shown by Sim:listSims
+  SoracomCoverage:
+    Type: String
+    Default: g
+    AllowedValues: [g, jp]
+  SoracomSecretArn:
+    Type: String
+    Description: Secrets Manager ARN containing authKeyId, authKey, and remoteCommandToken
+  DeviceId:
+    Type: String
+    Default: takao_01s_05
+  DeviceHttpPort:
+    Type: Number
+    Default: 8088
+  CognitoDomainPrefix:
+    Type: String
+    Description: Globally unique Cognito domain prefix
+  DashboardUrl:
+    Type: String
+    Default: http://localhost:5173/
+    Description: Exact dashboard callback and logout URL
+
+Conditions:
+  IsGlobalCoverage: !Equals [!Ref SoracomCoverage, g]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [arm64]
+    Timeout: 30
+    MemorySize: 256
+    Tracing: Active
+
+Resources:
+  DashboardUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: qlm29h-remote-control
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      MfaConfiguration: OPTIONAL
+      EnabledMfas: [SOFTWARE_TOKEN_MFA]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+
+  DashboardUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref DashboardUserPool
+
+  DashboardUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref DashboardUserPool
+      ClientName: qlm29h-dashboard
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email]
+      CallbackURLs: [!Ref DashboardUrl]
+      LogoutURLs: [!Ref DashboardUrl]
+      SupportedIdentityProviders: [COGNITO]
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+
+  DashboardApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      Auth:
+        Authorizers:
+          DashboardJwt:
+            IdentitySource: $request.header.Authorization
+            JwtConfiguration:
+              issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${DashboardUserPool}
+              audience:
+                - !Ref DashboardUserPoolClient
+
+  CommandHistory:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: device_id
+          AttributeType: S
+        - AttributeName: sort_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: device_id
+          KeyType: HASH
+        - AttributeName: sort_key
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  DashboardFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          SORACOM_SIM_ID: !Ref SoracomSimId
+          SORACOM_API_ENDPOINT: !If
+            - IsGlobalCoverage
+            - https://g.api.soracom.io
+            - https://api.soracom.io
+          SORACOM_SECRET_ARN: !Ref SoracomSecretArn
+          DEVICE_ID: !Ref DeviceId
+          DEVICE_HTTP_PORT: !Ref DeviceHttpPort
+          HISTORY_TABLE: !Ref CommandHistory
+          COGNITO_ISSUER: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${DashboardUserPool}
+          COGNITO_DOMAIN: !Sub https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+          COGNITO_CLIENT_ID: !Ref DashboardUserPoolClient
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CommandHistory
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref SoracomSecretArn
+      Events:
+        Root:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DashboardApi
+            Path: /
+            Method: GET
+            Auth:
+              Authorizer: NONE
+        Static:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DashboardApi
+            Path: /{proxy+}
+            Method: GET
+            Auth:
+              Authorizer: NONE
+        GetDevice:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DashboardApi
+            Path: /api/device
+            Method: GET
+            Auth:
+              Authorizer: DashboardJwt
+        SendCommand:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DashboardApi
+            Path: /api/commands
+            Method: POST
+            Auth:
+              Authorizer: DashboardJwt
+        GetHistory:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref DashboardApi
+            Path: /api/history
+            Method: GET
+            Auth:
+              Authorizer: DashboardJwt
+
+Outputs:
+  DashboardUrl:
+    Value: !Sub https://${DashboardApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/
+  CognitoUserPoolId:
+    Value: !Ref DashboardUserPool
+  CognitoClientId:
+    Value: !Ref DashboardUserPoolClient

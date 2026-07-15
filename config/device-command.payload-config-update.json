@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "request_id": "payload-config-20260715-001",
+  "action": "payload_config_update",
+  "parameters": {
+    "configuration": {
+      "version": 1,
+      "preset": "custom",
+      "interval_sec": 5,
+      "include_sentences": [
+        "GGA",
+        "RMC",
+        "GSA"
+      ]
+    }
+  }
+}
