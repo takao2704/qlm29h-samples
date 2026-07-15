@@ -34,6 +34,7 @@ GGA_QUALITY = {
 DEFAULT_DISK_SPOOL_DIR = "unified_spool"
 DEFAULT_RAM_SPOOL_DIR = "/dev/shm/qlm29h-nmea-unified/spool"
 DEFAULT_PAYLOAD_CONTROL_PATH = "/home/pi/.config/qlm29h/payload-control.json"
+DEFAULT_TELEMETRY_STATUS_PATH = "/home/pi/.config/qlm29h/telemetry-status.json"
 
 PAYLOAD_CONTROL_BASE = {
     "version": 1,
@@ -661,6 +662,7 @@ class Snapshot:
                 "lat": lat,
                 "lon": lon,
                 "sentence_id": sentence_id,
+                "received_at": item.get("received_at"),
                 "utc_time": fields.get("utc_time"),
                 "quality": fields.get("fix_quality"),
                 "quality_label": fields.get("fix_quality_label"),
@@ -673,6 +675,156 @@ class Snapshot:
 
     def has_data(self) -> bool:
         return bool(self.latest or self.multi)
+
+
+CONSTELLATION_LABELS = {
+    "GP": "GPS",
+    "GL": "GLONASS",
+    "GA": "Galileo",
+    "GB": "BeiDou",
+    "GQ": "QZSS",
+    "GN": "GNSS",
+}
+
+
+def latest_nmea_received_at(payload: dict[str, Any]) -> str | None:
+    received = []
+    nmea = payload.get("nmea", {})
+    if not isinstance(nmea, dict):
+        return None
+    for value in nmea.values():
+        items = value if isinstance(value, list) else [value]
+        for item in items:
+            if isinstance(item, dict) and isinstance(item.get("received_at"), str):
+                received.append(item["received_at"])
+    return max(received, default=None)
+
+
+def satellite_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    visible = 0
+    constellations = []
+    nmea = payload.get("nmea", {})
+    if isinstance(nmea, dict):
+        for sentence_id, value in nmea.items():
+            if not isinstance(sentence_id, str) or not sentence_id.endswith("GSV"):
+                continue
+            items = value if isinstance(value, list) else [value]
+            counts = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                fields = item.get("fields", {})
+                count = fields.get("satellites_in_view") if isinstance(fields, dict) else None
+                if isinstance(count, int):
+                    counts.append(count)
+            if counts:
+                visible += max(counts)
+                label = CONSTELLATION_LABELS.get(sentence_id[:2], sentence_id[:2])
+                if label not in constellations:
+                    constellations.append(label)
+
+    latest_position = payload.get("latest_position", {})
+    used = latest_position.get("satellites_used") if isinstance(latest_position, dict) else None
+    if isinstance(used, int):
+        visible = max(visible, used)
+    return compact({"used": used, "in_view": visible or None, "constellations": constellations})
+
+
+class RuntimeTelemetryStatus:
+    def __init__(self, path: str | pathlib.Path, *, dr_state: str, ntrip_enabled: bool) -> None:
+        self.path = pathlib.Path(path)
+        self.lock = threading.Lock()
+        now = dt.datetime.now(dt.UTC).isoformat()
+        self.value: dict[str, Any] = {
+            "version": 1,
+            "updated_at": now,
+            "latest_data_received_at": None,
+            "latest_position": None,
+            "rtk": {"quality": None, "quality_label": "Unknown"},
+            "dr": {"configured": dr_state, "active": False},
+            "ntrip": {
+                "status": "connecting" if ntrip_enabled else "disabled",
+                "last_received_at": None,
+                "last_bytes": 0,
+                "total_bytes": 0,
+            },
+            "satellites": {"used": None, "in_view": None, "constellations": []},
+        }
+        with self.lock:
+            self._persist_locked()
+
+    def update_ntrip(self, status: str, error: str | None = None) -> None:
+        now = dt.datetime.now(dt.UTC).isoformat()
+        with self.lock:
+            ntrip = self.value["ntrip"]
+            ntrip["status"] = status
+            if status == "connected":
+                ntrip["connected_at"] = now
+                ntrip.pop("error", None)
+            elif error:
+                ntrip["error"] = error[:240]
+            self.value["updated_at"] = now
+            self._persist_locked()
+
+    def record_rtcm(self, byte_count: int) -> None:
+        now = dt.datetime.now(dt.UTC).isoformat()
+        with self.lock:
+            ntrip = self.value["ntrip"]
+            ntrip.update(
+                {
+                    "status": "receiving",
+                    "last_received_at": now,
+                    "last_bytes": byte_count,
+                    "total_bytes": int(ntrip.get("total_bytes", 0)) + byte_count,
+                }
+            )
+
+    def record_payload(self, payload: dict[str, Any]) -> None:
+        now = dt.datetime.now(dt.UTC).isoformat()
+        position = payload.get("latest_position")
+        quality = position.get("quality") if isinstance(position, dict) else None
+        quality_label = position.get("quality_label") if isinstance(position, dict) else None
+        with self.lock:
+            self.value["updated_at"] = now
+            self.value["latest_data_received_at"] = (
+                latest_nmea_received_at(payload) or payload.get("sent_at") or now
+            )
+            if isinstance(position, dict):
+                self.value["latest_position"] = compact(
+                    {
+                        key: position.get(key)
+                        for key in (
+                            "lat",
+                            "lon",
+                            "received_at",
+                            "quality",
+                            "quality_label",
+                            "satellites_used",
+                            "hdop",
+                            "altitude",
+                        )
+                    }
+                )
+            self.value["rtk"] = {"quality": quality, "quality_label": quality_label or "Unknown"}
+            self.value["dr"]["active"] = quality == 6
+            self.value["satellites"] = satellite_summary(payload)
+            self._persist_locked()
+
+    def _persist_locked(self) -> None:
+        tmp_path = self.path.with_suffix(self.path.suffix + ".tmp")
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.write_text(
+                json.dumps(self.value, ensure_ascii=False, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            os.replace(tmp_path, self.path)
+        except OSError as exc:
+            print(f"[STATUS] Failed to write {self.path}: {exc}", flush=True)
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
 
 def build_ntrip_request(host: str, mount: str, username: str, password: str) -> bytes:
@@ -710,13 +862,21 @@ def wait_while_running(seconds: float) -> None:
         time.sleep(min(0.5, remaining))
 
 
-def ntrip_worker(args: argparse.Namespace, ser: serial.Serial) -> None:
+def ntrip_worker(
+    args: argparse.Namespace,
+    ser: serial.Serial,
+    telemetry_status: RuntimeTelemetryStatus | None = None,
+) -> None:
     if not args.ntrip_user or not args.ntrip_pass:
         print("[NTRIP] Disabled: NTRIP_USER/NTRIP_PASS are not set", flush=True)
+        if telemetry_status is not None:
+            telemetry_status.update_ntrip("disabled")
         return
 
     while running:
         try:
+            if telemetry_status is not None:
+                telemetry_status.update_ntrip("connecting")
             print(f"[NTRIP] Connecting to {args.ntrip_host}:{args.ntrip_port}", flush=True)
             sock = socket.create_connection((args.ntrip_host, args.ntrip_port), timeout=10)
             sock.sendall(build_ntrip_request(args.ntrip_host, args.ntrip_mount, args.ntrip_user, args.ntrip_pass))
@@ -727,6 +887,8 @@ def ntrip_worker(args: argparse.Namespace, ser: serial.Serial) -> None:
                 time.sleep(10)
                 continue
             print("[NTRIP] Connected", flush=True)
+            if telemetry_status is not None:
+                telemetry_status.update_ntrip("connected")
             sock.settimeout(1)
             last_gga_sent = 0.0
             last_rtcm_log = 0.0
@@ -749,11 +911,15 @@ def ntrip_worker(args: argparse.Namespace, ser: serial.Serial) -> None:
                 except (OSError, serial.SerialException) as exc:
                     signal_fatal_serial_error(f"NTRIP serial write failed: {exc}")
                     return
+                if telemetry_status is not None:
+                    telemetry_status.record_rtcm(len(data))
                 if now - last_rtcm_log >= 10:
                     print(f"[NTRIP] RTCM forwarded: {len(data)} bytes", flush=True)
                     last_rtcm_log = now
         except Exception as exc:  # noqa: BLE001
             if running:
+                if telemetry_status is not None:
+                    telemetry_status.update_ntrip("reconnecting", str(exc))
                 print(f"[NTRIP] Error: {exc}; reconnecting in 5s", flush=True)
                 wait_while_running(5)
 
@@ -1002,6 +1168,11 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("UNIFIED_PAYLOAD_CONTROL", DEFAULT_PAYLOAD_CONTROL_PATH),
         help="JSON file controlling send interval and payload fields. Reloaded automatically when changed.",
     )
+    parser.add_argument(
+        "--telemetry-status",
+        default=os.environ.get("QLM29H_TELEMETRY_STATUS", DEFAULT_TELEMETRY_STATUS_PATH),
+        help="JSON file containing the latest GNSS, RTK, DR, NTRIP, and satellite status.",
+    )
     parser.add_argument("--post-timeout", type=float, default=10)
     parser.add_argument("--max-pending", type=int, default=int(os.environ.get("UNIFIED_MAX_PENDING", "120")))
     parser.add_argument(
@@ -1073,8 +1244,13 @@ def main() -> int:
                 print(f"[MAIN] Serial close error ignored: {close_exc}", flush=True)
         return 1
 
+    telemetry_status = RuntimeTelemetryStatus(
+        args.telemetry_status,
+        dr_state=args.dr_state,
+        ntrip_enabled=not args.no_ntrip and bool(args.ntrip_user and args.ntrip_pass),
+    )
     if not args.no_ntrip:
-        threading.Thread(target=ntrip_worker, args=(args, ser), daemon=True).start()
+        threading.Thread(target=ntrip_worker, args=(args, ser, telemetry_status), daemon=True).start()
 
     snapshot = Snapshot()
     payload_control = PayloadControl(args.payload_control, args.interval)
@@ -1126,11 +1302,12 @@ def main() -> int:
                 next_post = now + payload_control.config["interval_sec"]
                 if not snapshot.has_data():
                     continue
+                raw_payload = snapshot.build_payload(args.serial_port)
+                telemetry_status.record_payload(raw_payload)
                 if not payload_control.config["enabled"]:
                     snapshot.reset()
                     continue
-                payload = snapshot.build_payload(args.serial_port)
-                payload = apply_payload_control(payload, payload_control.config)
+                payload = apply_payload_control(raw_payload, payload_control.config)
                 spooled_path = spool_payload(spool_dir, payload, args.max_spool_files, args.max_spool_bytes)
                 if spooled_path is None:
                     print("[UNIFIED] Current payload was not spooled; resetting snapshot", flush=True)

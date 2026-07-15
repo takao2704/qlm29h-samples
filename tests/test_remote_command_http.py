@@ -19,6 +19,7 @@ class RemoteCommandApplicationTests(unittest.TestCase):
             command_path=root / "device-command.json",
             status_path=root / "device-status.json",
             payload_control_path=root / "payload-control.json",
+            telemetry_status_path=root / "telemetry-status.json",
             token="test-token",
             allowed_source="100.127.10.16",
             device_id="device-01",
@@ -68,6 +69,17 @@ class RemoteCommandApplicationTests(unittest.TestCase):
             (root / "device-status.json").write_text(
                 json.dumps({"request_id": "stop-1", "status": "completed"})
             )
+            (root / "telemetry-status.json").write_text(
+                json.dumps(
+                    {
+                        "latest_data_received_at": "2026-07-16T00:00:00+00:00",
+                        "latest_position": {"lat": 35.681236, "lon": 139.767125},
+                        "rtk": {"quality": 4, "quality_label": "Fixed RTK"},
+                        "ntrip": {"status": "receiving"},
+                        "satellites": {"used": 21, "in_view": 34},
+                    }
+                )
+            )
             app = self.create_app(directory)
             status, response = app.handle(
                 "GET",
@@ -80,6 +92,8 @@ class RemoteCommandApplicationTests(unittest.TestCase):
             self.assertFalse(response["transmission_enabled"])
             self.assertEqual(response["payload_control"]["include_sentences"], ["GGA", "RMC"])
             self.assertEqual(response["control_status"]["status"], "completed")
+            self.assertEqual(response["telemetry_status"]["rtk"]["quality"], 4)
+            self.assertEqual(response["telemetry_status"]["satellites"]["used"], 21)
 
     def test_rejects_invalid_command(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -30,6 +30,7 @@ import type {
   Preset,
   RuntimeConfig,
   Sentence,
+  TelemetryStatus,
 } from './types'
 
 const sentences: { id: Sentence; label: string; description: string }[] = [
@@ -200,6 +201,7 @@ export default function App() {
     device?.control_status?.action === 'dr_alignment_start' &&
     ['accepted', 'stopping_sender', 'running'].includes(device.control_status.status)
   const estimatedBytes = estimatePayloadBytes(draft)
+  const telemetry = device?.telemetry_status
 
   return (
     <div className="app-shell">
@@ -225,6 +227,41 @@ export default function App() {
           <ConnectionRow icon={<Signal size={17} />} label="セルラー" value={device?.online ? '接続中' : '未確認'} ok={!!device?.online} />
           <ConnectionRow icon={<Cloud size={17} />} label="Remote Command" value={device?.online ? '到達可能' : '未確認'} ok={!!device?.online} />
           <ConnectionRow icon={<ShieldCheck size={17} />} label="API保護" value="Cognito" ok />
+        </section>
+
+        <section className="rail-section telemetry-summary">
+          <div className="section-eyebrow">LATEST TELEMETRY</div>
+          <div className="telemetry-list">
+            <TelemetryRow
+              icon={<Activity size={16} />}
+              label="最新データ受信"
+              value={telemetry?.latest_data_received_at ? formatRelative(telemetry.latest_data_received_at) : '—'}
+              detail={telemetry?.latest_data_received_at ? formatDate(telemetry.latest_data_received_at) : undefined}
+            />
+            <TelemetryRow
+              icon={<Navigation size={16} />}
+              label="最新緯度経度"
+              value={coordinateText(telemetry?.latest_position)}
+              detail={altitudeText(telemetry?.latest_position)}
+            />
+            <TelemetryRow
+              icon={<Gauge size={16} />}
+              label="RTK FIX / DR"
+              value={rtkDrText(telemetry)}
+            />
+            <TelemetryRow
+              icon={<Radio size={16} />}
+              label="NTRIP"
+              value={ntripText(telemetry)}
+              detail={ntripDetail(telemetry)}
+            />
+            <TelemetryRow
+              icon={<Satellite size={16} />}
+              label="衛星捕捉"
+              value={satelliteText(telemetry)}
+              detail={telemetry?.satellites?.constellations?.join(' · ') || undefined}
+            />
+          </div>
         </section>
 
         <section className="rail-section current-config">
@@ -472,6 +509,19 @@ function ConnectionRow({ icon, label, value, ok }: { icon: React.ReactNode; labe
   return <div className="connection-row"><span className="connection-icon">{icon}</span><span>{label}</span><strong className={ok ? 'ok' : ''}>{value}</strong></div>
 }
 
+function TelemetryRow({ icon, label, value, detail }: { icon: React.ReactNode; label: string; value: string; detail?: string }) {
+  return (
+    <div className="telemetry-row">
+      <span className="telemetry-icon">{icon}</span>
+      <span className="telemetry-copy">
+        <span className="telemetry-label">{label}</span>
+        <strong>{value}</strong>
+        {detail && <small>{detail}</small>}
+      </span>
+    </div>
+  )
+}
+
 function StatusBadge({ status }: { status: string }) {
   const normalized = status.toLowerCase()
   const good = ['completed', 'accepted', 'cancelled', 'calibrated'].includes(normalized)
@@ -526,6 +576,59 @@ function estimatePayloadBytes(payload: PayloadControl): number {
   const count = payload.include_sentences?.length ?? sentences.length
   const perSentence = payload.preset === 'full' ? 520 : payload.preset === 'compact' ? 260 : 330
   return 180 + count * perSentence
+}
+
+function coordinateText(position?: TelemetryStatus['latest_position']): string {
+  if (typeof position?.lat !== 'number' || typeof position?.lon !== 'number') return '—'
+  return `${position.lat.toFixed(6)}, ${position.lon.toFixed(6)}`
+}
+
+function altitudeText(position?: TelemetryStatus['latest_position']): string | undefined {
+  if (typeof position?.altitude !== 'number') return undefined
+  return `高度 ${position.altitude.toFixed(1)} m`
+}
+
+function rtkDrText(telemetry?: TelemetryStatus | null): string {
+  const rtkLabels: Record<string, string> = {
+    'No Fix': '未測位',
+    'GPS SPS Mode': '単独測位',
+    'Differential GPS / SPS / SBAS Mode': 'DGPS',
+    'Fixed RTK': 'RTK Fixed',
+    'Float RTK': 'RTK Float',
+    'Estimated / Dead Reckoning': 'DR推定',
+    Unknown: '未確認',
+  }
+  const rtk = rtkLabels[telemetry?.rtk?.quality_label ?? 'Unknown'] ?? telemetry?.rtk?.quality_label ?? '未確認'
+  const dr = telemetry?.dr?.active
+    ? 'DR測位中'
+    : telemetry?.dr?.configured === 'on'
+      ? 'DR有効'
+      : telemetry?.dr?.configured === 'off'
+        ? 'DR無効'
+        : 'DR未確認'
+  return `${rtk} / ${dr}`
+}
+
+function ntripText(telemetry?: TelemetryStatus | null): string {
+  const status = telemetry?.ntrip?.status
+  if (status === 'receiving') return '補正データ受信中'
+  if (status === 'connected') return '接続済み・受信待ち'
+  if (status === 'connecting' || status === 'reconnecting') return '再接続中'
+  if (status === 'disabled') return '無効'
+  return '未確認'
+}
+
+function ntripDetail(telemetry?: TelemetryStatus | null): string | undefined {
+  const receivedAt = telemetry?.ntrip?.last_received_at
+  if (!receivedAt) return undefined
+  return `最終受信 ${formatRelative(receivedAt)}`
+}
+
+function satelliteText(telemetry?: TelemetryStatus | null): string {
+  const used = telemetry?.satellites?.used
+  const inView = telemetry?.satellites?.in_view
+  if (typeof used !== 'number' && typeof inView !== 'number') return '—'
+  return `使用 ${used ?? '—'} / 可視 ${inView ?? '—'}`
 }
 
 function calibrationText(state?: number) {

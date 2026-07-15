@@ -30,6 +30,33 @@ export interface ControlStatus {
   error?: string
 }
 
+export interface TelemetryStatus {
+  version?: number
+  updated_at?: string
+  latest_data_received_at?: string | null
+  latest_position?: {
+    lat?: number
+    lon?: number
+    received_at?: string
+    quality?: number
+    quality_label?: string
+    satellites_used?: number
+    hdop?: number
+    altitude?: number
+  } | null
+  rtk?: { quality?: number | null; quality_label?: string }
+  dr?: { configured?: 'on' | 'off' | 'unchanged'; active?: boolean }
+  ntrip?: {
+    status?: string
+    connected_at?: string
+    last_received_at?: string | null
+    last_bytes?: number
+    total_bytes?: number
+    error?: string
+  }
+  satellites?: { used?: number | null; in_view?: number | null; constellations?: string[] }
+}
+
 export interface DeviceStatus {
   version: number
   device_id: string
@@ -38,6 +65,7 @@ export interface DeviceStatus {
   transmission_enabled: boolean
   payload_control: PayloadControl
   control_status: ControlStatus | null
+  telemetry_status?: TelemetryStatus | null
 }
 
 export interface HistoryItem {

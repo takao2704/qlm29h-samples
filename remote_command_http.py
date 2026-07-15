@@ -22,6 +22,7 @@ DEFAULT_CONFIG_DIR = "/home/pi/.config/qlm29h"
 DEFAULT_COMMAND_PATH = f"{DEFAULT_CONFIG_DIR}/device-command.json"
 DEFAULT_STATUS_PATH = f"{DEFAULT_CONFIG_DIR}/device-status.json"
 DEFAULT_PAYLOAD_CONTROL_PATH = f"{DEFAULT_CONFIG_DIR}/payload-control.json"
+DEFAULT_TELEMETRY_STATUS_PATH = f"{DEFAULT_CONFIG_DIR}/telemetry-status.json"
 DEFAULT_REMOTE_COMMAND_SOURCE = "100.127.10.16"
 MAX_BODY_BYTES = 64 * 1024
 
@@ -33,6 +34,7 @@ class RemoteCommandApplication:
         command_path: pathlib.Path,
         status_path: pathlib.Path,
         payload_control_path: pathlib.Path,
+        telemetry_status_path: pathlib.Path,
         token: str,
         allowed_source: str,
         device_id: str,
@@ -40,6 +42,7 @@ class RemoteCommandApplication:
         self.command_path = command_path
         self.status_path = status_path
         self.payload_control_path = payload_control_path
+        self.telemetry_status_path = telemetry_status_path
         self.token = token
         self.allowed_source = allowed_source
         self.device_id = device_id
@@ -74,6 +77,10 @@ class RemoteCommandApplication:
             payload_control = load_json_object(self.payload_control_path)
         except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError):
             payload_control = {"version": 1, "enabled": True, "preset": "full"}
+        try:
+            telemetry_status = load_json_object(self.telemetry_status_path)
+        except (FileNotFoundError, OSError, json.JSONDecodeError, ValueError):
+            telemetry_status = None
         return {
             "version": 1,
             "device_id": self.device_id,
@@ -82,6 +89,7 @@ class RemoteCommandApplication:
             "transmission_enabled": payload_control.get("enabled", True),
             "payload_control": payload_control,
             "control_status": control_status,
+            "telemetry_status": telemetry_status,
         }
 
     def _accept_command(self, body: bytes) -> tuple[int, dict[str, Any]]:
@@ -163,6 +171,10 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("UNIFIED_PAYLOAD_CONTROL", DEFAULT_PAYLOAD_CONTROL_PATH),
     )
     parser.add_argument(
+        "--telemetry-status",
+        default=os.environ.get("QLM29H_TELEMETRY_STATUS", DEFAULT_TELEMETRY_STATUS_PATH),
+    )
+    parser.add_argument(
         "--allowed-source",
         default=os.environ.get("REMOTE_COMMAND_ALLOWED_SOURCE", DEFAULT_REMOTE_COMMAND_SOURCE),
     )
@@ -183,6 +195,7 @@ def main() -> int:
         command_path=pathlib.Path(args.command_path),
         status_path=pathlib.Path(args.status_path),
         payload_control_path=pathlib.Path(args.payload_control),
+        telemetry_status_path=pathlib.Path(args.telemetry_status),
         token=token,
         allowed_source=args.allowed_source,
         device_id=args.device_id,

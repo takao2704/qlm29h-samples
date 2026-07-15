@@ -120,6 +120,60 @@ class ReceiverStartupCommandsTest(unittest.TestCase):
             rtk_nmea_unified.receiver_startup_commands("invalid")
 
 
+class RuntimeTelemetryStatusTest(unittest.TestCase):
+    def test_records_position_rtk_ntrip_and_satellite_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            status_path = pathlib.Path(tmp) / "telemetry-status.json"
+            status = rtk_nmea_unified.RuntimeTelemetryStatus(
+                status_path,
+                dr_state="on",
+                ntrip_enabled=True,
+            )
+            status.update_ntrip("connected")
+            status.record_rtcm(512)
+            status.record_payload(
+                {
+                    "sent_at": "2026-07-16T00:00:05+00:00",
+                    "latest_position": {
+                        "lat": 35.681236,
+                        "lon": 139.767125,
+                        "received_at": "2026-07-16T00:00:04+00:00",
+                        "quality": 4,
+                        "quality_label": "Fixed RTK",
+                        "satellites_used": 21,
+                    },
+                    "nmea": {
+                        "GNGGA": {
+                            "received_at": "2026-07-16T00:00:04+00:00",
+                            "fields": {"fix_quality": 4},
+                        },
+                        "GPGSV": [
+                            {
+                                "received_at": "2026-07-16T00:00:03+00:00",
+                                "fields": {"satellites_in_view": 14},
+                            }
+                        ],
+                        "GLGSV": [
+                            {
+                                "received_at": "2026-07-16T00:00:03+00:00",
+                                "fields": {"satellites_in_view": 9},
+                            }
+                        ],
+                    },
+                }
+            )
+
+            saved = json.loads(status_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["latest_position"]["lat"], 35.681236)
+            self.assertEqual(saved["rtk"]["quality_label"], "Fixed RTK")
+            self.assertFalse(saved["dr"]["active"])
+            self.assertEqual(saved["ntrip"]["status"], "receiving")
+            self.assertEqual(saved["ntrip"]["last_bytes"], 512)
+            self.assertEqual(saved["satellites"]["used"], 21)
+            self.assertEqual(saved["satellites"]["in_view"], 23)
+            self.assertEqual(saved["satellites"]["constellations"], ["GPS", "GLONASS"])
+
+
 class UnifiedWorkerTest(unittest.TestCase):
     def tearDown(self) -> None:
         rtk_nmea_unified.running = False

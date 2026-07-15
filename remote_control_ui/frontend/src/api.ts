@@ -17,6 +17,21 @@ let mockStatus: DeviceStatus = {
   observed_at: now(),
   transmission_enabled: true,
   payload_control: defaultPayload,
+  telemetry_status: {
+    updated_at: now(),
+    latest_data_received_at: now(),
+    latest_position: {
+      lat: 35.681236,
+      lon: 139.767125,
+      quality: 4,
+      quality_label: 'Fixed RTK',
+      satellites_used: 21,
+    },
+    rtk: { quality: 4, quality_label: 'Fixed RTK' },
+    dr: { configured: 'on', active: false },
+    ntrip: { status: 'receiving', last_received_at: now(), last_bytes: 512, total_bytes: 184320 },
+    satellites: { used: 21, in_view: 34, constellations: ['GPS', 'GLONASS', 'Galileo', 'BeiDou'] },
+  },
   control_status: {
     request_id: 'web-demo-1',
     action: 'transmission_start',

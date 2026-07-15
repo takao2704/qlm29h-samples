@@ -39,6 +39,14 @@ button { color: inherit; }
 .connection-icon { color: #647186; display: flex; }
 .connection-row strong { font-weight: 650; color: #738095; }
 .connection-row strong.ok { color: var(--green); }
+.telemetry-summary { display: grid; gap: 14px; }
+.telemetry-list { display: grid; gap: 14px; }
+.telemetry-row { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; align-items: start; }
+.telemetry-icon { color: #657287; display: flex; padding-top: 2px; }
+.telemetry-copy { display: grid; gap: 3px; min-width: 0; }
+.telemetry-label { color: #7b8798; font-size: 9px; font-weight: 650; }
+.telemetry-copy strong { color: var(--navy); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
+.telemetry-copy small { color: var(--muted); font-size: 8px; line-height: 1.35; overflow-wrap: anywhere; }
 .current-config { display: grid; gap: 11px; }
 .summary-row { display: flex; justify-content: space-between; gap: 14px; font-size: 12px; color: var(--muted); }
 .summary-row strong { color: var(--navy); font-weight: 680; text-align: right; }
