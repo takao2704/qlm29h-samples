@@ -506,7 +506,9 @@ function LoginScreen({ onLogin, error }: { onLogin: () => void; error: string | 
 
 function normalizeDraft(payload: PayloadControl): PayloadControl {
   return {
-    ...payload,
+    version: 1,
+    enabled: payload.enabled,
+    preset: payload.preset,
     interval_sec: payload.interval_sec ?? 5,
     include_sentences: payload.include_sentences ?? sentences.map((item) => item.id),
   }
